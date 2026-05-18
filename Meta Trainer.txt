@@ -1,0 +1,3160 @@
+// ==UserScript==
+// @name         Meta Trainer
+// @namespace    http://tampermonkey.net/
+// @version      1.2
+// @description  Teaches noobs the ways of the pros, doesn't work in multiplayer don't even try it you script kiddie
+// @author       ross
+// @match        https://geoduels.io/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
+// @connect      google.com
+// @connect      googleapis.com
+// @connect      maps.googleapis.com
+// @connect      nominatim.openstreetmap.org
+// @run-at       document-start
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    let state = {
+        currentLocation: null,
+        lastPano: null,
+        countryCode: null,
+        countryName: null,
+        regionName: null,
+        status: 'Waiting for a round...',
+        uiLocked: false,
+        panoCache: new Map(),
+        isSoloCached: false
+    };
+
+    let overlayElement = null;
+    let isDraggingFlag = false;
+
+    const CATEGORIES = [
+        '🏠 Architectural', '💡 Bollards', '📷 Camera Gens', '🏢 Companies', '💵 Currency',
+        '🌐 Domains', '🚗 Driving Side', '🚓 Follow Cars', '🚙 Google Vehicles',
+        '🪪 License Plates', '🛣️ Road Lines', '📞 Phone Numbers', '📮 Post Boxes',
+        '🌳 Scenery', '🚶 Sidewalks', '🛑 Sign Styles', '⚡ Utility Poles', '🪧 Street Signs'
+    ];
+
+    const TIPS_DB = {
+        'us': {
+            name: 'United States',
+            data: [
+                'Wood framing, vinyl siding, sprawling suburbs, strip malls.',
+                'Rare. Occasionally flat white posts or orange traffic barrels.',
+                'Gen 2 in rural areas, Gen 3, Gen 4, and Gen 5 (Smallcam) widely available.',
+                'Walmart, Target, CVS, Walgreens, McDonald\'s, Home Depot.',
+                'US Dollar ($, USD).',
+                '.com, .org, .net (.us is very rare).',
+                'Right.',
+                'None.',
+                'SUVs, trucks, and standard Gen 4 hatchbacks.',
+                'Highly variable by state. Front plates required in 30 states.',
+                'Yellow center lines, solid white outer lines.',
+                '+1 (xxx) xxx-xxxx.',
+                'Blue USPS collection boxes.',
+                'Highly diverse. Deserts (SW), pine forests (NW), deciduous (NE), tropical (FL).',
+                'Poured concrete slabs, very common in suburban grids.',
+                'Octagonal red STOP signs. Speed limits in MPH.',
+                'Wooden poles with distinct cylindrical grey transformers attached.',
+                'Green rectangular street name signs; massive green highway overhead signs.'
+            ],
+            regions: {
+                'Alaska': ['Yellow plates.', 'Rugged snow-capped mountains.', 'Birch/spruce forests, dirt roads.'],
+                'Hawaii': ['Tropical foliage, volcanic mountains.', 'Red volcanic soil.', 'Front plates required.'],
+                'Washington': ['Very green, tall Douglas fir trees.', 'Cloudy, overcast weather is common.', 'Specific WA state bollards present.'],
+                'Oregon': ['Yellow or tree-graphic plates.', 'Tall pine trees, lush green coastal areas.', '55 MPH max on rural roads.', 'Specific OR state bollards present.'],
+                'California': ['White plates with a red cursive "California".', 'Redwoods (N), dry scrub (S).', 'Wooden poles often have a yellow band.'],
+                'Nevada': ['Extremely arid desert.', 'Joshua trees (S), sagebrush (N).', 'Casinos.', 'Specific NV state bollards present.'],
+                'Arizona': ['Saguaro cacti.', 'Red rocks/sand.', 'No front plates required.', 'Watch for distinct square bollards (shared with ID/UT).'],
+                'Utah': ['Dramatic red rock formations and canyons.', 'High snowy mountains in the north.', 'Watch for distinct square bollards (shared with ID/AZ).'],
+                'Colorado': ['High Rocky Mountains.', 'Green and white plates (mountains graphic).', 'Aspen trees.', 'Look for green colored bollards (highly common here).'],
+                'New Mexico': ['Yellow/Turquoise license plates.', 'Green street signs are common.', 'Green colored bollards can occasionally be seen here.'],
+                'Texas': ['State highway signs are the literal geographic map outline of Texas over a black square.', 'Front plates required.', 'Frontage roads.', 'Specific TX state bollards present.'],
+                'Florida': ['Palm trees, Palmettos, very flat.', 'Sandy soil, swamps.', 'Standard plates are green text on white with a central orange graphic.'],
+                'New York': ['Golden yellow plates (older) or white/blue plates (newer).', 'Front plates required.', 'Specific NY state bollards present.'],
+                'New Jersey': ['Pale yellow license plates.', 'Dense urban areas, toll roads.', 'Front plates required.'],
+                'Pennsylvania': ['Blue, yellow, and white gradient plates.', 'Rolling green hills.', 'Specific PA state bollards present.'],
+                'Montana': ['Bollards here distinctively have 1 bolt.'],
+                'South Dakota': ['Bollards here distinctively have 2 bolts.'],
+                'Wyoming': ['Green colored bollards can be seen here (usually CO).'],
+                'Idaho': ['Watch for square bollards (shared with UT/AZ) or green ones (shared with CO).'],
+                'Massachusetts': ['MA/ME/NH share a specific bollard style.'],
+                'Maine': ['MA/ME/NH share a specific bollard style.'],
+                'New Hampshire': ['MA/ME/NH share a specific bollard style.'],
+                'Wisconsin': ['Specific WI state bollards present.'],
+                'Michigan': ['Specific MI state bollards present.'],
+                'Minnesota': ['Specific MN state bollards present.']
+            }
+        },
+        'ca': {
+            name: 'Canada',
+            data: [
+                'Similar to US. Basements are extremely common. Brick and siding.',
+                'Flat flexible posts, sometimes with a single white or yellow reflector.',
+                'Gen 3 and Gen 4.',
+                'Tim Hortons, Shoppers Drug Mart, Canadian Tire, Loblaws.',
+                'Canadian Dollar ($, CAD).',
+                '.ca.',
+                'Right.',
+                'None.',
+                'Standard Gen 4 hatchbacks/SUVs.',
+                'NO front plates in AB, QC, SK, NS, PEI, NL. Front plates required in BC, MB, ON.',
+                'Yellow center lines, solid white outer lines (identical to US).',
+                '+1 (xxx) xxx-xxxx.',
+                'Red Canada Post boxes.',
+                'Massive pine forests, lakes, flat prairies in the middle, Rockies in the west.',
+                'Concrete slabs, similar to US.',
+                '"MAXIMUM" speed limit signs in km/h. Bilingual or French signs in Quebec/NB.',
+                'Wooden. Often have distinctive wooden crossarms (especially in Manitoba).',
+                'Green, blue, or white depending on municipality. Trans-Canada signs feature a maple leaf.'
+            ],
+            regions: {
+                'British Columbia': ['Front plates REQUIRED.', 'Massive rocky mountains and tall pine forests.', 'Specific BC province bollards present.'],
+                'Alberta': ['NO front plates.', 'Rockies in the west, flat agricultural prairies.', 'Pumpjacks.', 'Specific AB province bollards present.'],
+                'Saskatchewan': ['NO front plates.', 'Extremely flat terrain, wheat fields.', 'Grid road system.'],
+                'Manitoba': ['Front plates REQUIRED.', 'Flat prairies in south, lakes/boreal forest in north.', 'Specific MB province bollards present.'],
+                'Ontario': ['Front plates REQUIRED.', 'Canadian Shield rock cuts.', 'Trillium flower logo on highway signs.', 'Specific ON province bollards present.'],
+                'Quebec': ['NO front plates.', 'French language exclusively on signs ("Arrêt").', 'Blue shield highway signs.', 'Specific QC province bollards present.'],
+                'New Brunswick': ['Front plates REQUIRED.', 'Bilingual signs (French/English).'],
+                'Nova Scotia': ['NO front plates.', 'Coastal, rocky landscapes with Atlantic maritime houses.'],
+                'Northwest Territories': ['Bollards here mostly have black tips.', 'Gravel roads and stunted pine trees.']
+            }
+        },
+        'gb': {
+            name: 'United Kingdom',
+            data: [
+                'Brick terraced housing, semi-detached houses, chimney pots.',
+                'White plastic with a red reflector on the left, white on the right.',
+                'Gen 3 and Gen 4.',
+                'Tesco, Sainsbury\'s, Greggs, ASDA, Costa Coffee.',
+                'British Pound (£, GBP).',
+                '.co.uk, .uk.',
+                'Left.',
+                'None.',
+                'Standard Gen 4 hatchbacks.',
+                'White plate on the front, Yellow plate on the rear. Often with a blue strip on the left.',
+                'Zig-zag white lines at crosswalks. Short dashed white lines for lanes.',
+                '+44 (often formatted 01xxx, 02x, 07xxx).',
+                'Iconic red cylindrical pillar boxes.',
+                'Rolling green hills, hedgerows, cloudy weather.',
+                'Tarmac (asphalt) or paved stone slabs. Often very narrow.',
+                'Red circle speed limits (in MPH). Yellow diamond signs do NOT exist.',
+                'Wooden telegraph poles (BT) with climbing steps. Metal streetlights.',
+                'Motorways are Blue, Primary roads are Green, Local roads are White.'
+            ]
+        },
+        'fr': {
+            name: 'France',
+            data: [
+                'Stone houses, distinct wooden window shutters, terraced village buildings.',
+                'White cylinder with a black band containing a white reflector. (Red bands denote intersections).',
+                'Gen 3 and Gen 4.',
+                'Carrefour, E.Leclerc, Boulanger, Intermarché, Decathlon.',
+                'Euro (€, EUR).',
+                '.fr.',
+                'Right.',
+                'None.',
+                'Standard Gen 4 cars.',
+                'White plates with blue strips on BOTH sides (EU strip left, region right).',
+                'Long dashed white center lines, dashed white outer lines. No yellow lines.',
+                '+33 (01 to 09).',
+                'Yellow rectangular boxes (La Poste).',
+                'Agriculture, vineyards, rolling hills, stone villages.',
+                'Tarmac, paving stones, or absent in rural villages.',
+                'STOP signs. Speed limits in km/h (red circles).',
+                'Concrete and wooden poles. Concrete poles often have square profiles.',
+                'Directional signs are overwhelmingly Yellow or White.'
+            ]
+        },
+        'it': {
+            name: 'Italy',
+            data: [
+                'Terracotta roofs, stucco/stone walls, green or brown wooden shutters.',
+                'White with a black slanted top. Red rectangular reflector on one side, white on the other.',
+                'Gen 3 and Gen 4.',
+                'Conad, Coop, Eni, TIM, Esselunga.',
+                'Euro (€, EUR).',
+                '.it.',
+                'Right.',
+                'None.',
+                'Standard Gen 4 cars.',
+                'White plates with short blue strips on BOTH sides.',
+                'Solid white outer lines, dashed white center lines.',
+                '+39.',
+                'Red rectangular boxes (Poste Italiane).',
+                'Mountains (Alps/Apennines), cypress trees, olive groves, Mediterranean coast.',
+                'Cobblestone (Sanpietrini), tarmac, or very narrow/absent.',
+                'STOP signs. Backs of road signs are often painted black/grey.',
+                'Concrete poles and metal streetlights.',
+                'Blue highway signs, White local directional signs. White marble street plaques.'
+            ]
+        },
+        'de': {
+            name: 'Germany',
+            data: [
+                'Steep pitched roofs, stucco walls, half-timbered houses (Fachwerk).',
+                'White bollards with two black slanted lines.',
+                'Exclusively Gen 3 and Gen 4. Historically heavily blurred houses.',
+                'ALDI, Lidl, Rewe, Edeka, Sparkasse.',
+                'Euro (€, EUR).',
+                '.de.',
+                'Right.',
+                'None.',
+                'Standard Gen 3/4 cars.',
+                'White plates with blue EU strip on the left.',
+                'Dashed white center lines, solid white outer lines.',
+                '+49.',
+                'Yellow boxes (Deutsche Post).',
+                'Dense temperate forests, clean agricultural fields, flat north, alpine south.',
+                'Brick paving stones, distinct red brick cycle paths.',
+                'Red circle speed limits. Font is DIN 1451.',
+                'Mostly buried lines. Rare wooden poles.',
+                'Yellow directional signs with black borders. Autobahn signs are Blue.'
+            ]
+        },
+        'es': {
+            name: 'Spain',
+            data: [
+                'Flat apartment blocks, terracotta roofs, white-washed walls in the south.',
+                'White bollards with a yellow reflector on one side, white on the other.',
+                'Gen 3 and Gen 4.',
+                'Mercadona, Dia, Repsol, BBVA, El Corte Inglés.',
+                'Euro (€, EUR).',
+                '.es.',
+                'Right.',
+                'None.',
+                'Standard Gen 4 cars.',
+                'White plates with blue EU strip on the left.',
+                'Dashed white center, solid white outer. Yellow lines denote construction/no-parking.',
+                '+34.',
+                'Yellow cylindrical boxes (Correos).',
+                'Dry, arid, hilly terrain. Olive trees, red soil. Greener in the north.',
+                'Paved tiles, stone, distinct geometric patterns.',
+                'STOP signs. Backs of signs are metallic.',
+                'Wooden and concrete. Sometimes double-pole structures.',
+                'Autovía signs are Blue. Local signs are White.'
+            ]
+        },
+        'ru': {
+            name: 'Russia',
+            data: [
+                'Khrushchyovkas (Soviet apartment blocks), wooden houses with blue/green trim.',
+                'Rare/varied. Sometimes black and white striped concrete blocks.',
+                'Gen 3 and Gen 4.',
+                'Magnit (Магнит), Pyaterochka (Пятёрочка), Sberbank, Lukoil.',
+                'Russian Ruble (₽, RUB).',
+                '.ru, .рф.',
+                'Right.',
+                'None.',
+                'Long red antenna is often visible on the back of the Google car.',
+                'White plates with a black border. NO blue EU strip.',
+                'White center lines, dashed or solid. Often worn away.',
+                '+7.',
+                'Blue boxes (Russian Post).',
+                'Massive birch and pine forests (Taiga). Often flat, overgrown weeds.',
+                'Cracked asphalt, concrete slabs, or dirt paths.',
+                'STOP sign says "STOP" (English). Pedestrian crossing signs have a blue background.',
+                'Concrete A-frame poles are very common.',
+                'Blue directional signs with white Cyrillic text.'
+            ],
+            regions: {
+                'Kamchatka': ['Rugged volcanic mountains.', 'Right-hand drive cars (from Japan) are very common.'],
+                'Sakhalin': ['Island in the far east.', 'Right-hand drive cars are ubiquitous.', 'Giant knotweed.'],
+                'Primorsky': ['Vladivostok area.', 'Huge amount of right-hand drive Japanese cars.', 'Lush broadleaf forests.'],
+                'Sakha': ['Yakutia.', 'Above-ground insulated heating pipes run along streets.', 'Sandy dirt roads and larch forests.'],
+                'Buryatia': ['Lake Baikal.', 'Sandy soil, dry pine forests.', 'Buddhist flags or stupas.'],
+                'Krasnodar': ['Near the Black Sea.', 'Warm, lush, subtropical vegetation.'],
+                'Murmansk': ['Arctic circle.', 'Barren tundra, rocky landscapes, stunted trees.']
+            }
+        },
+        'br': {
+            name: 'Brazil',
+            data: [
+                'Unpainted red brick houses, colorful painted concrete, security walls.',
+                'Varied. Often concrete blocks or plastic posts.',
+                'Gen 3 and Gen 4.',
+                'Itaú, Bradesco, Atacadão, Caixa, Petrobras.',
+                'Brazilian Real (R$, BRL).',
+                '.com.br.',
+                'Right.',
+                'None.',
+                'Standard Gen 3/4.',
+                'Mercosur plates (white with blue top strip) or older grey plates.',
+                'Double yellow center lines, white outer lines.',
+                '+55 (Uses 2-digit DDD area codes on signs).',
+                'Yellow boxes (Correios).',
+                'Extremely red dirt. Tropical rainforests, Cerrado (savannah), Araucaria pines in south.',
+                'Portuguese pavement (black and white mosaic stones) or dirt.',
+                'Stop signs say "PARE". Backs of road signs are almost ALWAYS painted black.',
+                'A-shaped, ladder-like concrete utility poles.',
+                'Street names are almost always on blue rectangular signs.'
+            ],
+            regions: {
+                'Sao Paulo': ['DDD area codes 11 to 19.', 'Rolling green hills, vast sugar cane fields.'],
+                'Rio de Janeiro': ['DDD area codes 21 to 24.', 'Lush, mountainous coastal terrain.'],
+                'Minas Gerais': ['DDD area codes 31 to 38.', 'Hilly "Sea of Hills" landscape.', 'Deep red dirt.'],
+                'Bahia': ['DDD area codes 71 to 77.', 'Semi-arid (Sertao) landscape inland.'],
+                'Rio Grande do Sul': ['DDD area codes 51 to 55.', 'Araucaria (Parana) pine trees.', 'Flat pampas.'],
+                'Parana': ['DDD area codes 41 to 46.', 'Araucaria pine trees and very red dirt.'],
+                'Amazonas': ['DDD area code 92 and 97.', 'Dense tropical Amazon rainforest.', 'Red dirt roads.']
+            }
+        },
+        'ar': {
+            name: 'Argentina',
+            data: [
+                'Flat roofs, brick, concrete blocks. More European influence in BA.',
+                'Flat, white, flexible plastic bollards.',
+                'Gen 3 and Gen 4.',
+                'YPF, Carrefour, Banco Nación, Grido, OXXO.',
+                'Argentine Peso ($, ARS).',
+                '.com.ar.',
+                'Right.',
+                'None.',
+                'Mostly covered by a Black Google car (Gen 4). Black sun visors often visible.',
+                'Mercosur plates, or older white plates with a distinct black dot in the middle.',
+                'White center lines, white outer lines.',
+                '+54.',
+                'Yellow boxes (Correo Argentino).',
+                'Flat grassy Pampas, dry Patagonian desert, Andes mountains in west.',
+                'Concrete, paving stones, dirt.',
+                'Stop signs say "PARE". Backs of road signs are often painted black (like Brazil).',
+                'Wooden poles and solid concrete columns.',
+                'Green or blue directional signs.'
+            ],
+            regions: {
+                'Buenos Aires': ['Very flat, rich agricultural land (Pampas).', 'European-style architecture.'],
+                'Tierra del Fuego': ['Extremely cold, barren, southern tip of the country.', 'Strong winds, snow-capped peaks.'],
+                'Misiones': ['Deep red dirt.', 'Lush tropical jungle.', 'Northeast corner bordering Brazil.'],
+                'Mendoza': ['Dry, arid, desert-like.', 'Vineyards and poplar trees lining the roads.', 'Andes to the west.'],
+                'Cordoba': ['Hilly terrain (Sierras de Cordoba).', 'Central location, mixed agriculture.'],
+                'Salta': ['High altitude, colorful rocky mountains.', 'Cacti and Andean culture.'],
+                'Chubut': ['Treeless, vast gravel steppes (Patagonia).', 'Extremely windy, scrub vegetation.']
+            }
+        },
+        'au': {
+            name: 'Australia',
+            data: [
+                'Brick bungalows, corrugated iron roofs, verandas.',
+                'White guideposts with a red reflector on the left, white on the right.',
+                'Gen 3 and Gen 4.',
+                'Woolworths, Coles, Bunnings, Commonwealth Bank, Telstra.',
+                'Australian Dollar ($, AUD).',
+                '.com.au.',
+                'Left.',
+                'None.',
+                'Gen 4, often a Ute (pickup truck) or SUV.',
+                'Varies by state (Yellow in NSW, mostly white elsewhere).',
+                'Broken white center lines, solid white outer lines.',
+                '+61.',
+                'Red or Yellow boxes (AusPost).',
+                'Red dirt, eucalyptus trees, vast dry outback, tropical north.',
+                'Concrete, asphalt.',
+                'Warning signs are Yellow Diamonds. Speed limits in km/h.',
+                'Wooden and concrete. "Stobie poles" (steel and concrete) in South Australia.',
+                'Green and white directional signs.'
+            ],
+            regions: {
+                'New South Wales': ['Yellow license plates are standard.', 'Vast varied terrain, from coast to outback.'],
+                'Victoria': ['White plates with blue text.', '"VicRoads" style green directional signs.'],
+                'Queensland': ['Maroon text on white plates.', 'Tropical in the north, sugarcane fields.'],
+                'South Australia': ['White plates with black text.', 'Red dirt outback, very dry.', 'Stobie poles.'],
+                'Western Australia': ['Blue text on white plates, sometimes yellow.', 'Extremely vast, flat, and dry terrain.'],
+                'Northern Territory': ['White text on red plates.', 'Very red dirt, tropical north.'],
+                'Tasmania': ['Green landscape, temperate forests.', 'Very hilly, feels similar to New Zealand.']
+            }
+        },
+        'in': {
+            name: 'India',
+            data: [
+                'Unfinished brick, flat roofs, colorful paints, rounded roof tiles.',
+                'Painted stones/concrete.',
+                '"Shitcam" (brown tint, round blur). Gen 4 "smallcam" (transparent blur, front protrusion).',
+                'Reliance, Tata, local shops.',
+                'Indian Rupee (₹, INR).',
+                '.in.',
+                'Left.',
+                'Tuk-tuks (auto-rickshaws) everywhere.',
+                'Gen 4 smallcam / Gen 3 trekker.',
+                'White plates. Yellow (commercial). Green (EV).',
+                'White dashed or non-existent.',
+                '+91.',
+                'Red cylindrical boxes (India Post).',
+                'Dusty plains, lush south, Himalayan north. Extreme traffic.',
+                'Dirt, broken concrete.',
+                'Varied. Black and white striped signposts.',
+                'Concrete square pole with trident top. Wooden poles are extremely rare.',
+                'Blue or Green signs. English + Local scripts.'
+            ],
+            regions: {
+                'Maharashtra': ['Marathi script (Hindi + ळ).', 'Distinctly dark soil.', 'Upside-down triangle poletops.'],
+                'Gujarat': ['Gujarati script (no top line).', 'Concrete holey poles.', 'Cacti (Euphorbia neriifolia) fences.'],
+                'Kerala': ['Malayalam script (upside-down U).', 'Wealthy homes.', 'Small yellow pole markings, metal holey poles.'],
+                'Punjab': ['Punjabi script.', 'Mint green electricity counters.', 'Gurdwaras (white domes).'],
+                'Meghalaya': ['English is used almost exclusively.', 'Thin grey metal poles.', 'Khasi pines.'],
+                'Assam': ['Assamese/Bengali script.', 'Flat tea plantations.', 'Thin wooden stick fences.'],
+                'West Bengal': ['Bengali script.', 'Large hip roofs made of corrugated sheet metal.'],
+                'Delhi': ['Orange and bright green buses.', 'Poles painted with 5+ thin black/yellow stripes.'],
+                'Bihar': ['Exactly 4 thick black/yellow pole stripes.', 'Trees with 4 red/white stripes at the bottom.'],
+                'Rajasthan': ['Sandy soil, very dry desert.', 'Canola fields.', 'Camels.'],
+                'Tamil Nadu': ['Tamil script (straight lines/90° angles).', 'Organized orange roof tiles.', 'Palmyra palms.']
+            }
+        },
+        'za': {
+            name: 'South Africa',
+            data: [
+                'High walls, barbed wire, electric fences, burglar bars.',
+                'White guideposts with red/white reflectors.',
+                'Gen 3 and Gen 4.',
+                'Shoprite, Spar, Pick n Pay, Standard Bank, MTN.',
+                'South African Rand (R, ZAR).',
+                '.co.za.',
+                'Left.',
+                'None.',
+                'Standard Gen 3/4.',
+                'White plates with black text.',
+                'Yellow outer lines, white dashed middle lines.',
+                '+27.',
+                'Red boxes (SAPO).',
+                'Savannah scrub, acacia trees, mountainous cape region, red dirt.',
+                'Dirt, patchy pavement.',
+                'Red circle speed limits. Warning signs are red triangles.',
+                'Wooden and metal.',
+                'Green directional highway signs.'
+            ]
+        },
+        'mx': {
+            name: 'Mexico',
+            data: [
+                'Flat roofs, colorful concrete, tin roofs, exposed rebar on roofs.',
+                'Yellow and white plastic or concrete blocks.',
+                'Gen 3 and Gen 4.',
+                'OXXO, Pemex, Bimbo, Coppel, Telcel.',
+                'Mexican Peso ($, MXN).',
+                '.com.mx, .mx.',
+                'Right.',
+                'None.',
+                'Gen 3/4. Sometimes a pickup truck in rural areas.',
+                'Varies wildly by state. Mostly white backgrounds.',
+                'Yellow center lines, white outer lines.',
+                '+52.',
+                'Green boxes (Correos de Mexico).',
+                'Arid desert in north, tropical jungle in south. High mountains.',
+                'Concrete, very high curbs in cities.',
+                'Stop signs say "ALTO". Back of signs are galvanized (NOT black).',
+                'Octagonal (8-sided) concrete poles are ubiquitous.',
+                'Green highway directional signs.'
+            ],
+            regions: {
+                'Nayarit': ['Specific Nayarit bollards present.']
+            }
+        },
+        'jp': {
+            name: 'Japan',
+            data: [
+                'Narrow houses, dark tiled roofs, dense urban plots, sliding doors.',
+                'Downward-pointing arrows over roads (snow poles) in the north.',
+                'Gen 3 (Low camera angle) and Gen 4.',
+                'Lawson, 7-Eleven, FamilyMart, AEON.',
+                'Japanese Yen (¥, JPY).',
+                '.jp.',
+                'Left.',
+                'None.',
+                'Gen 3 low-camera cars, standard Gen 4.',
+                'White plates (regular). Yellow license plates (Kei cars).',
+                'Solid white or yellow center lines. White outer lines.',
+                '+81.',
+                'Red square boxes.',
+                'Dense cedar forests, bamboo, highly mountainous, dense urban sprawl.',
+                'Yellow tactile paving for the blind is absolutely everywhere.',
+                'Red downward triangle stop signs ("止まれ").',
+                'Concrete poles painted with Black and Yellow stripes near the bottom.',
+                'Blue directional signs (English and Kanji).'
+            ]
+        },
+        'th': {
+            name: 'Thailand',
+            data: [
+                'Ornate roofs, spirit houses in yards, corrugated metal siding.',
+                'Black/white or red/white painted concrete bases.',
+                'Gen 3 and Gen 4.',
+                '7-Eleven, Lotus\'s, Big C, CJ Express.',
+                'Thai Baht (฿, THB).',
+                '.co.th.',
+                'Left.',
+                'None.',
+                'Standard Gen 3/4.',
+                'White (normal). Yellow license plates (commercial/taxis).',
+                'Yellow center lines, solid white outer lines.',
+                '+66.',
+                'Red boxes (Thailand Post).',
+                'Tropical palms, flat agriculture, lush mountains in the north.',
+                'Paved, often cluttered or painted curbs.',
+                'Octagonal stop signs. Red circle speed limits.',
+                'Concrete poles with square holes in them.',
+                'Green/White directional signs. Unique Thai script.'
+            ]
+        },
+        'id': {
+            name: 'Indonesia',
+            data: [
+                'Terracotta tiled roofs (often Minangkabau shapes), open storefronts.',
+                'Black and white painted concrete bases.',
+                'Gen 3 and Gen 4.',
+                'Indomaret, Alfamart, Pertamina, BRI.',
+                'Indonesian Rupiah (Rp, IDR).',
+                '.co.id, .id.',
+                'Left.',
+                'None.',
+                'Mostly Gen 4.',
+                'Black plates (older coverage) or white plates with black text (mid-2022 onwards).',
+                'White center lines, white outer lines.',
+                '+62.',
+                'Orange boxes (Pos Indonesia).',
+                'Tropical, palm oil plantations, volcanic soil, motorbikes everywhere.',
+                'Paved blocks, often broken or dirt.',
+                'Yellow diamond warning signs.',
+                'Concrete ladder poles and round metal poles.',
+                'Green directional signs. Latin alphabet.'
+            ]
+        },
+        'ph': {
+            name: 'Philippines',
+            data: [
+                'Concrete breeze blocks, corrugated roofs, sari-sari stores.',
+                'Rare, painted concrete blocks.',
+                'Gen 3 and Gen 4.',
+                'Jollibee, SM Supermalls, Mercury Drug, Puregold.',
+                'Philippine Peso (₱, PHP).',
+                '.ph.',
+                'Right.',
+                'None.',
+                'Standard Gen 3/4.',
+                'White plates, sometimes with a green tint/text.',
+                'Concrete segmented roads are extremely common.',
+                '+63.',
+                'PhilPost (very rare to see).',
+                'Tropical, palm trees, dense unruly traffic, tricycles (sidecars).',
+                'Concrete, dirt, or absent.',
+                'US-style signs. Basketball courts/hoops in almost every village.',
+                'Round concrete and wooden poles, extremely messy wiring.',
+                'English is heavily used on signs. Green highway signs.'
+            ]
+        },
+        'tw': {
+            name: 'Taiwan',
+            data: [
+                'Tiled facades, metal barred windows, rooftop water tanks.',
+                'Reflective strips on concrete walls.',
+                'Gen 3 and Gen 4.',
+                '7-Eleven, FamilyMart, PX Mart.',
+                'New Taiwan Dollar (NT$, TWD).',
+                '.tw.',
+                'Right.',
+                'None.',
+                'Standard Gen 3/4.',
+                'White plates with black text.',
+                'Double yellow center lines. Red/Yellow lines painted along curbs.',
+                '+886.',
+                'Green (local) & Red (airmail) side-by-side boxes (Chunghwa Post).',
+                'Lush green jungle mountains, tropical, dense urban areas.',
+                'Paved arcades (covered walkways under buildings).',
+                'Octagonal stop signs.',
+                'Poles painted with black and yellow stripes ALL the way to the bottom.',
+                'Green directional, blue diamond route markers. Traditional Chinese.'
+            ]
+        },
+        'kr': {
+            name: 'South Korea',
+            data: [
+                'High-rise apartment blocks with giant painted numbers, brick villas.',
+                'Green/white or yellow/black striped flexible posts.',
+                'Gen 3 and Gen 4. Distinct heavy blurring on faces and cars.',
+                'GS25, CU, Emart, Paris Baguette.',
+                'South Korean Won (₩, KRW).',
+                '.co.kr, .kr.',
+                'Right.',
+                'None.',
+                'Standard Gen 3/4.',
+                'White (normal), Yellow plates on commercial vehicles.',
+                'Yellow center lines, white outer lines.',
+                '+82.',
+                'Red boxes (Korea Post).',
+                'Pine trees, highly mountainous, dense infrastructure.',
+                'Paved blocks, tactile paving.',
+                'Red octagonal stop signs.',
+                'Concrete and metal poles, heavily wired.',
+                'Green directional highway signs, Brown tourist signs. Hangul script.'
+            ]
+        },
+        'sg': {
+            name: 'Singapore',
+            data: [
+                'HDB public housing blocks, luxury condos, extreme urban density.',
+                'Metal posts, highly maintained.',
+                'Gen 3 and Gen 4.',
+                'FairPrice, DBS, UOB, Singtel.',
+                'Singapore Dollar (S$, SGD).',
+                '.sg, .com.sg.',
+                'Left.',
+                'None.',
+                'Gen 4.',
+                'Black/white or yellow/black plates.',
+                'Black and white striped curbs everywhere.',
+                '+65.',
+                'White and red boxes (SingPost).',
+                'Lush, perfectly manicured green foliage in a highly urban city-state.',
+                'Pristine concrete and paving stones.',
+                'Yellow diamond warnings.',
+                'Mostly buried lines. Green/grey metal streetlights.',
+                'Green directional signs with English text.'
+            ]
+        },
+        'ng': {
+            name: 'Nigeria',
+            data: [
+                'Concrete block houses, corrugated metal roofs, high security gates.',
+                'Yellow and black painted curbs/bollards.',
+                'Gen 4.',
+                'Dangote, MTN, Glo.',
+                'Nigerian Naira (₦, NGN).',
+                '.ng, .com.ng.',
+                'Right.',
+                'A police escort vehicle (often a Toyota Hilux) follows the Google car.',
+                'Gen 4 SUV.',
+                'Green and white license plates.',
+                'Faded white lines or unpaved.',
+                '+234.',
+                'NIPOST (rare).',
+                'Tropical south, dry savanna north. High traffic.',
+                'Dirt, open drains.',
+                'US-style signs but poorly maintained.',
+                'Concrete poles, heavily wired.',
+                'Blue directional signs.'
+            ]
+        },
+        'cl': {
+            name: 'Chile',
+            data: [
+                'Wooden houses, corrugated iron, strong fences.',
+                'Distinct red and white painted wooden posts.',
+                'Gen 3 and Gen 4.',
+                'Copec, Lider (Walmart), Santa Isabel, BancoEstado.',
+                'Chilean Peso ($, CLP).',
+                '.cl.',
+                'Right.',
+                'None.',
+                'Often a white truck/car. Gen 3/4.',
+                'Plain white plates.',
+                'All road lines are white (no yellow center lines).',
+                '+56.',
+                'Blue and yellow boxes (Correos de Chile).',
+                'Snowy Andes mountains ALWAYS to the east. Dry desert in north, green forests in south.',
+                'Concrete, paving, dirt.',
+                'Stop signs say "PARE". US-style green highway signs.',
+                'Distinctive wooden poles, often painted or treated.',
+                'Green street signs.'
+            ],
+            regions: {
+                'Atacama': ['Distinct Ruta 31 bollards present.'],
+                'Magallanes': ['Bollards are extremely diverse. Look for Maga Red/White, Maga Yellow/Red, Maga White/Red, or Maga Blue bollards.']
+            }
+        },
+        'ua': {
+            name: 'Ukraine',
+            data: [
+                'Soviet era apartment blocks, colorful rural houses, tin roofs.',
+                'Red and white banded bollards.',
+                'Gen 3 and Gen 4.',
+                'ATB-Market, Silpo, PrivatBank, Nova Poshta.',
+                'Ukrainian Hryvnia (₴, UAH).',
+                '.ua, .укр.',
+                'Right.',
+                'None.',
+                'Red Google car is often visible.',
+                'EU-style plates but with UA flag/colors (blue and yellow).',
+                'White center lines, often faded.',
+                '+380.',
+                'Yellow or Blue boxes (Ukrposhta).',
+                'Vast flat agricultural plains, sunflower fields.',
+                'Cracked asphalt, dirt paths.',
+                'European style. Pedestrian crossing signs are blue squares.',
+                'Concrete holey poles and A-frames.',
+                'Cyrillic alphabet, uniquely uses the letters "i" and "ї" (Russia doesn\'t).'
+            ]
+        },
+        'pl': {
+            name: 'Poland',
+            data: [
+                'Colorful plaster houses, steep roofs, concrete fences.',
+                'Bollards have a distinct red horizontal rectangle reflector.',
+                'Gen 3 and Gen 4.',
+                'Biedronka, Zabka, Orlen, Żabka.',
+                'Polish Zloty (zł, PLN).',
+                '.pl.',
+                'Right.',
+                'None.',
+                'Standard Gen 4.',
+                'White plates, EU strip.',
+                'White dashed center, solid outer.',
+                '+48.',
+                'Red boxes (Poczta Polska).',
+                'Flat agricultural plains, pine/birch forests.',
+                'Concrete blocks, paving stones.',
+                'Pedestrian crossings on blue/white signs.',
+                'Concrete poles with holes (A-frame/ladder).',
+                'Green directional signs. "ul." means street. Uses lots of w, z, cz, sz.'
+            ]
+        },
+        'nz': {
+            name: 'New Zealand',
+            data: [
+                'Weatherboard houses, corrugated iron roofs.',
+                'White post, red reflector on left, white on right.',
+                'Gen 3, Gen 4.',
+                'Countdown, Pak\'nSave, New World.',
+                'New Zealand Dollar ($, NZD).',
+                '.co.nz, .nz.',
+                'Left.',
+                'None.',
+                'Gen 4, standard.',
+                'White plates with black text.',
+                'White dashed middle, white outer. Yellow dashed means no passing.',
+                '+64.',
+                'Red, yellow, or white boxes (NZ Post).',
+                'Green, fern trees, highly mountainous.',
+                'Asphalt, concrete.',
+                'Yellow diamond warning signs. PW-style red circle speed limits.',
+                'Concrete and wooden. Often thick white poles with a metal band.',
+                'Green and white directional signs.'
+            ]
+        },
+        'nl': {
+            name: 'Netherlands',
+            data: [
+                'Brick houses, large windows, dense townhouses.',
+                'Red reflectors on the right, white on the left. Highly distinct half-round shape.',
+                'Gen 3, Gen 4.',
+                'Albert Heijn, Jumbo, SPAR.',
+                'Euro (€, EUR).',
+                '.nl.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'Yellow plates front and back.',
+                'Dashed white center. Green stripe in middle means 100 km/h.',
+                '+31.',
+                'Orange boxes (PostNL).',
+                'Extremely flat, canals, polders, lots of bicycles.',
+                'Red brick cycle paths are ubiquitous.',
+                'Red circle speed limits. Blue pedestrian crossings.',
+                'Mostly buried lines. Rare poles.',
+                'Blue signs with white text. Distinct ANWB signs for cyclists.'
+            ]
+        },
+        'be': {
+            name: 'Belgium',
+            data: [
+                'Brick houses similar to NL but less uniform. Terraced houses.',
+                'White posts with an orange/red vertical reflector on right, white on left.',
+                'Gen 3, Gen 4.',
+                'Delhaize, Colruyt, Carrefour.',
+                'Euro (€, EUR).',
+                '.be.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with RED text.',
+                'White center lines.',
+                '+32.',
+                'Red boxes (bpost).',
+                'Flat in north (Flanders), hilly in south (Wallonia).',
+                'Concrete tiles, often uneven.',
+                'Red circle speed limits. Language depends on region (Dutch/French).',
+                'Concrete poles with ladder holes.',
+                'Blue or green signs. Bilingual in Brussels.'
+            ]
+        },
+        'ch': {
+            name: 'Switzerland',
+            data: [
+                'Chalets, clean modern buildings, shutters.',
+                'White posts with a black band and a single rectangular reflector.',
+                'Gen 4 Low Camera mostly.',
+                'Migros, Coop, Denner.',
+                'Swiss Franc (Fr, CHF).',
+                '.ch.',
+                'Right.',
+                'None.',
+                'Low Gen 4 car.',
+                'White plates on front, White plates on back (rear has shields).',
+                'White center lines.',
+                '+41.',
+                'Yellow boxes (Swiss Post).',
+                'High Alps, pristine green valleys, lakes.',
+                'Clean asphalt.',
+                'Red circle speed limits. Pedestrian crossings have a yellow diamond.',
+                'Mostly buried, some wooden.',
+                'Green highway signs, Blue main road signs, White local signs.'
+            ]
+        },
+        'at': {
+            name: 'Austria',
+            data: [
+                'Alpine chalets, clean towns.',
+                'White posts with a black top. Red reflector on right, white on left.',
+                'Gen 4.',
+                'Spar, Billa, Hofer.',
+                'Euro (€, EUR).',
+                '.at.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with a red-white-red top/bottom strip (sometimes just regular EU strip).',
+                'White lines.',
+                '+43.',
+                'Yellow boxes (Post AG).',
+                'Alps, green hills, very similar to Switzerland/Germany.',
+                'Paved.',
+                'Red circle speed limits. "Haltestelle" signs for bus stops.',
+                'Wooden poles.',
+                'Blue highway signs, White local signs.'
+            ]
+        },
+        'cz': {
+            name: 'Czechia',
+            data: [
+                'Plaster houses, colorful.',
+                'White posts with two orange reflectors in a black rectangle.',
+                'Gen 3, Gen 4.',
+                'Albert, Penny, Tesco.',
+                'Czech Koruna (Kč, CZK).',
+                '.cz.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip. NO regional blue strips on right.',
+                'White lines.',
+                '+420.',
+                'Orange boxes (Česká pošta).',
+                'Rolling hills, forests.',
+                'Paved blocks.',
+                'Pedestrian crossing signs have equal stripes.',
+                'A-frame concrete poles.',
+                'Blue directional signs. Red street signs often.'
+            ]
+        },
+        'sk': {
+            name: 'Slovakia',
+            data: [
+                'Similar to CZ, often somewhat older/rural feeling.',
+                'White posts with a single orange reflector in a black rectangle.',
+                'Gen 3, Gen 4.',
+                'Tesco, Coop Jednota, Kaufland.',
+                'Euro (€, EUR).',
+                '.sk.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+421.',
+                'Yellow or orange boxes (Slovenská pošta).',
+                'More mountainous than CZ (Tatra mountains).',
+                'Paved, sometimes cracked.',
+                'Red circle speed limits.',
+                'A-frame concrete poles.',
+                'Blue directional signs.'
+            ]
+        },
+        'hu': {
+            name: 'Hungary',
+            data: [
+                'Long narrow houses, plaster.',
+                'White posts with a thin red band and red reflector.',
+                'Gen 3, Gen 4.',
+                'Tesco, SPAR, CBA.',
+                'Hungarian Forint (Ft, HUF).',
+                '.hu.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+36.',
+                'Red boxes (Magyar Posta).',
+                'Very flat (Pannonian Basin), agriculture.',
+                'Paved.',
+                'Yellow diamond pedestrian crossing backs.',
+                'Concrete holey poles.',
+                'Green directional signs.'
+            ]
+        },
+        'ro': {
+            name: 'Romania',
+            data: [
+                'Ornamental roofs, corrugated fences, unpainted concrete often.',
+                'White posts with red reflectors. Often thick.',
+                'Gen 3, Gen 4.',
+                'Profi, Mega Image, Penny.',
+                'Romanian Leu (lei, RON).',
+                '.ro.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+40.',
+                'Red boxes (Poșta Română).',
+                'Carpathian mountains, flat in south.',
+                'Dirt or broken concrete.',
+                'Red circle speed limits.',
+                'Concrete holey poles with white painted bottoms.',
+                'Blue directional signs.'
+            ]
+        },
+        'bg': {
+            name: 'Bulgaria',
+            data: [
+                'Concrete block apartments, older brick houses.',
+                'White posts, similar to RO.',
+                'Gen 3, Gen 4. Distinct winter coverage in Gen 3.',
+                'Billa, Kaufland, T-Market.',
+                'Bulgarian Lev (лв, BGN).',
+                '.bg.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+359.',
+                'Yellow boxes (Bulgarian Posts).',
+                'Mountains, fields, often dry or wintery.',
+                'Cracked concrete.',
+                'Red circles.',
+                'Concrete holey poles.',
+                'Green and blue directional signs. Cyrillic script exclusively.'
+            ]
+        },
+        'gr': {
+            name: 'Greece',
+            data: [
+                'White washed houses, flat roofs, concrete structures.',
+                'White posts with a red strip.',
+                'Gen 3, Gen 4.',
+                'Sklavenitis, AB Vassilopoulos, Masoutis.',
+                'Euro (€, EUR).',
+                '.gr.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'Double white center lines are very common.',
+                '+30.',
+                'Yellow boxes (ELTA).',
+                'Dry, rocky, olive trees, mountains.',
+                'Paved or dirt.',
+                'Yellow warning signs. Back of signs silver.',
+                'Wooden poles.',
+                'Blue signs. Greek script.'
+            ]
+        },
+        'tr': {
+            name: 'Turkey',
+            data: [
+                'Concrete apartments, solar water heaters on roofs.',
+                'White bollards with a red band.',
+                'Gen 3, Gen 4.',
+                'BİM, A101, ŞOK.',
+                'Turkish Lira (₺, TRY).',
+                '.tr, .com.tr.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with a blue strip (non-EU).',
+                'White lines.',
+                '+90.',
+                'Yellow boxes (PTT).',
+                'Dry mountains, central plateau, green coast.',
+                'Paved.',
+                'D-roads on blue shields (e.g., D-100). DUR for stop.',
+                'Metal poles.',
+                'Blue or Green signs. Turkish alphabet (ş, ç, ğ, ı).'
+            ]
+        },
+        'fi': {
+            name: 'Finland',
+            data: [
+                'Wooden houses, painted red (Falu red) or yellow.',
+                'White posts with an orange/white reflector.',
+                'Gen 3, Gen 4.',
+                'K-Market, S-Market, Alepa.',
+                'Euro (€, EUR).',
+                '.fi.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'Dashed white lines. Yellow center lines on older coverage.',
+                '+358.',
+                'Orange boxes (Posti).',
+                'Birch and pine forests, thousands of lakes, flat.',
+                'Paved.',
+                'Yellow warning signs with red borders.',
+                'Wooden poles.',
+                'Blue directional signs.'
+            ]
+        },
+        'se': {
+            name: 'Sweden',
+            data: [
+                'Red wooden houses (Falu red), white trim.',
+                'White posts with an orange vertical reflector.',
+                'Gen 3, Gen 4.',
+                'ICA, Coop, Hemköp.',
+                'Swedish Krona (kr, SEK).',
+                '.se.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip. S on the left.',
+                'Short dashed white outer lines.',
+                '+46.',
+                'Yellow boxes (PostNord).',
+                'Coniferous forests, lakes, rocky outcrops.',
+                'Paved.',
+                'Yellow warning signs with red borders.',
+                'Wooden poles.',
+                'Blue directional signs.'
+            ]
+        },
+        'no': {
+            name: 'Norway',
+            data: [
+                'Wooden houses, often red, yellow, or white.',
+                'White posts with a yellow reflector.',
+                'Gen 3, Gen 4.',
+                'Kiwi, REMA 1000, Meny.',
+                'Norwegian Krone (kr, NOK).',
+                '.no.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with a green strip on commercial vehicles. Normal white with blue strip.',
+                'Yellow center lines.',
+                '+47.',
+                'Red boxes (Posten).',
+                'Fjords, massive mountains, distinct rocky landscapes.',
+                'Paved.',
+                'Yellow warning signs with red borders.',
+                'Wooden poles.',
+                'Yellow directional signs with black text.'
+            ]
+        },
+        'dk': {
+            name: 'Denmark',
+            data: [
+                'Brick houses, often red or yellow, thatched roofs occasionally.',
+                'Red and white banded bollards.',
+                'Gen 3, Gen 4.',
+                'Netto, REMA 1000, SuperBrugsen.',
+                'Danish Krone (kr, DKK).',
+                '.dk.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip. Yellow plates for commercial.',
+                'White lines. Outer dashed lines.',
+                '+45.',
+                'Red boxes (PostNord).',
+                'Very flat, agricultural, coastal.',
+                'Paved, red cycle paths.',
+                'Red circle speed limits.',
+                'Wooden and concrete.',
+                'Red and white directional signs.'
+            ]
+        },
+        'ie': {
+            name: 'Ireland',
+            data: [
+                'Stone or plaster houses, similar to UK but slightly different.',
+                'Yellow bollards.',
+                'Gen 3, Gen 4.',
+                'Centra, SuperValu, Spar.',
+                'Euro (€, EUR).',
+                '.ie.',
+                'Left.',
+                'None.',
+                'Gen 4.',
+                'White plates on front and rear (Unlike UK\'s yellow rear). EU strip.',
+                'Yellow dashed outer lines.',
+                '+353.',
+                'Green boxes (An Post).',
+                'Rolling green hills, stone walls.',
+                'Paved.',
+                'Yellow diamond warning signs (like US). Speed limits in km/h.',
+                'Wooden poles.',
+                'Green directional signs. Bilingual English/Irish.'
+            ]
+        },
+        'is': {
+            name: 'Iceland',
+            data: [
+                'Corrugated iron siding and roofs, colorful.',
+                'Yellow plastic bollards with a white reflector.',
+                'Gen 3, Gen 4.',
+                'Bónus, Krónan, Nettó.',
+                'Icelandic Króna (kr, ISK).',
+                '.is.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with blue text. No EU strip.',
+                'White lines.',
+                '+354.',
+                'Red boxes (Pósturinn).',
+                'Barren, treeless, volcanic rock, moss, dramatic mountains.',
+                'Paved or gravel.',
+                'Yellow warning signs.',
+                'Wooden poles.',
+                'Yellow directional signs.'
+            ]
+        },
+        'ee': {
+            name: 'Estonia',
+            data: [
+                'Wooden houses, Soviet-era apartments.',
+                'White bollards with a red reflector on a black patch.',
+                'Gen 3, Gen 4.',
+                'Selver, Rimi, Maxima.',
+                'Euro (€, EUR).',
+                '.ee.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+372.',
+                'Orange boxes (Omniva).',
+                'Flat, forests, similar to Finland.',
+                'Paved or dirt.',
+                'Blue pedestrian crossings.',
+                'Wooden poles.',
+                'Blue directional signs.'
+            ]
+        },
+        'lv': {
+            name: 'Latvia',
+            data: [
+                'Wooden houses, Soviet-era apartments.',
+                'White bollards with two red reflectors.',
+                'Gen 3, Gen 4.',
+                'Maxima, Rimi, Mego.',
+                'Euro (€, EUR).',
+                '.lv.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+371.',
+                'Yellow boxes (Latvijas Pasts).',
+                'Flat, forests, large unpaved dirt roads.',
+                'Dirt or paved.',
+                'Red circle speed limits.',
+                'Wooden poles.',
+                'Blue directional signs.'
+            ]
+        },
+        'lt': {
+            name: 'Lithuania',
+            data: [
+                'Wooden houses, slightly more colorful/ornate than EE/LV.',
+                'White bollards with an orange reflector.',
+                'Gen 3, Gen 4.',
+                'Maxima, IKI, Norfa.',
+                'Euro (€, EUR).',
+                '.lt.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+370.',
+                'Yellow boxes (Lietuvos paštas).',
+                'Flat, forests, agriculture.',
+                'Paved.',
+                'Red circle speed limits.',
+                'Concrete poles.',
+                'Blue directional signs.'
+            ]
+        },
+        'hr': {
+            name: 'Croatia',
+            data: [
+                'Stone houses on coast, plaster inland.',
+                'White bollards with a red reflector.',
+                'Gen 3, Gen 4.',
+                'Konzum, Plodine, Tommy.',
+                'Euro (€, EUR) [formerly Kuna].',
+                '.hr.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+385.',
+                'Yellow boxes (Hrvatska pošta).',
+                'Rocky coast (Dalmatia), flat plains inland.',
+                'Paved.',
+                'Yellow warning signs.',
+                'Concrete poles.',
+                'Yellow directional signs.'
+            ]
+        },
+        'rs': {
+            name: 'Serbia',
+            data: [
+                'Plaster/brick houses, Cyrillic.',
+                'White bollards with red/white reflectors.',
+                'Gen 3, Gen 4.',
+                'Maxi, IDEA, Roda.',
+                'Serbian Dinar (дин, RSD).',
+                '.rs.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, blue strip (non-EU).',
+                'White lines.',
+                '+381.',
+                'Yellow boxes (Pošta Srbije).',
+                'Hills, agriculture.',
+                'Paved.',
+                'Yellow warning signs.',
+                'Concrete poles.',
+                'Yellow directional signs. Cyrillic and Latin.'
+            ]
+        },
+        'si': {
+            name: 'Slovenia',
+            data: [
+                'Alpine chalets, clean towns.',
+                'White bollards with a black slanted top and a red reflector.',
+                'Gen 3, Gen 4.',
+                'Mercator, Spar, Tuš.',
+                'Euro (€, EUR).',
+                '.si.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+386.',
+                'Yellow boxes (Pošta Slovenije).',
+                'Alps, forests, very green.',
+                'Paved.',
+                'Yellow warning signs.',
+                'Wooden and concrete poles.',
+                'Yellow directional signs.'
+            ]
+        },
+        'me': {
+            name: 'Montenegro',
+            data: [
+                'Stone houses, coastal resorts.',
+                'White bollards with red/white reflectors.',
+                'Gen 3, Gen 4.',
+                'Voli, IDEA, Aroma.',
+                'Euro (€, EUR).',
+                '.me.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, blue strip.',
+                'White lines.',
+                '+382.',
+                'Yellow boxes.',
+                'Very mountainous, rocky, coastal.',
+                'Paved.',
+                'Yellow warning signs.',
+                'Concrete poles.',
+                'Yellow directional signs.'
+            ]
+        },
+        'mk': {
+            name: 'North Macedonia',
+            data: [
+                'Brick and plaster, unfinished top floors.',
+                'White bollards.',
+                'Gen 3, Gen 4.',
+                'KAM Market, Tinex, Vero.',
+                'Macedonian Denar (ден, MKD).',
+                '.mk.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, blue strip.',
+                'White lines.',
+                '+389.',
+                'Yellow boxes.',
+                'Mountainous, dry.',
+                'Paved.',
+                'Yellow warning signs.',
+                'Wooden and concrete poles.',
+                'Yellow directional signs. Cyrillic and Latin.'
+            ]
+        },
+        'al': {
+            name: 'Albania',
+            data: [
+                'Unfinished brick, colorful buildings, bunkers.',
+                'Red and white banded bollards.',
+                'Gen 3, Gen 4.',
+                'Conad, SPAR, Big Market.',
+                'Albanian Lek (L, ALL).',
+                '.al.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates, blue strips on BOTH sides (like Italy) but with eagle.',
+                'White lines.',
+                '+355.',
+                'Yellow boxes (Posta Shqiptare).',
+                'Mountains, rugged terrain.',
+                'Cracked asphalt, dirt.',
+                'Yellow warning signs.',
+                'Wooden and concrete poles.',
+                'Blue directional signs. Red double-eagle flags.'
+            ]
+        },
+        'ad': {
+            name: 'Andorra',
+            data: [
+                'Stone chalets, dark slate roofs.',
+                'White bollards with red reflectors.',
+                'Gen 3, Gen 4.',
+                'Caprabo, Pyrénées.',
+                'Euro (€, EUR).',
+                '.ad.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with the Andorran coat of arms in the middle.',
+                'White lines.',
+                '+376.',
+                'Yellow/French boxes.',
+                'Extremely mountainous (Pyrenees).',
+                'Paved.',
+                'Speed limits in km/h.',
+                'Buried lines mostly.',
+                'Catalan language.'
+            ]
+        },
+        'sm': {
+            name: 'San Marino',
+            data: [
+                'Italian style architecture, very dense.',
+                'Italian style bollards.',
+                'Gen 3, Gen 4.',
+                'Conad, Titancoop.',
+                'Euro (€, EUR).',
+                '.sm.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with a light blue crest on the left.',
+                'White lines.',
+                '+378.',
+                'White/blue boxes (Poste San Marino).',
+                'Mountainous (Mount Titano).',
+                'Paved.',
+                'Italian signs.',
+                'Concrete poles.',
+                'Italian signs.'
+            ]
+        },
+        'mt': {
+            name: 'Malta',
+            data: [
+                'Limestone buildings, flat roofs, colorful wooden balconies.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'Welbee\'s, Pavi, Pama.',
+                'Euro (€, EUR).',
+                '.mt.',
+                'Left.',
+                'None.',
+                'Gen 4.',
+                'White plates, EU strip.',
+                'White lines.',
+                '+356.',
+                'Red pillar boxes (MaltaPost).',
+                'Dry, rocky, very urbanized.',
+                'Paved.',
+                'UK style signs.',
+                'Wooden poles.',
+                'UK style directional signs. English and Maltese.'
+            ]
+        },
+        'il': {
+            name: 'Israel',
+            data: [
+                'White flat-roofed concrete buildings.',
+                'White/yellow striped bollards.',
+                'Gen 3, Gen 4.',
+                'Shufersal, Rami Levy, Super-Pharm.',
+                'Israeli New Shekel (₪, ILS).',
+                '.il, .co.il.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'Yellow plates front and back.',
+                'Yellow outer lines, white center lines.',
+                '+972.',
+                'Red boxes (Israel Post).',
+                'Desert in south, Mediterranean coast, hills in north.',
+                'Paved.',
+                'Warning signs are yellow triangles.',
+                'Concrete and wooden poles.',
+                'Green and Blue directional signs. Hebrew, Arabic, English.'
+            ]
+        },
+        'jo': {
+            name: 'Jordan',
+            data: [
+                'Limestone block houses, flat roofs, water tanks.',
+                'White posts, black bases.',
+                'Gen 3, Gen 4.',
+                'C-Town, Safeway, Carrefour.',
+                'Jordanian Dinar (JD, JOD).',
+                '.jo.',
+                'Right.',
+                'None.',
+                'Distinct black Google car is common.',
+                'White plates with a yellow strip on the left.',
+                'White lines.',
+                '+962.',
+                'Yellow boxes.',
+                'Very dry, arid desert, olive trees in the north.',
+                'Paved, dusty.',
+                'Warning signs are yellow triangles.',
+                'Concrete poles.',
+                'Green directional signs. Arabic and English.'
+            ]
+        },
+        'ae': {
+            name: 'UAE',
+            data: [
+                'Modern skyscrapers, luxury villas.',
+                'Yellow and black cylindrical bollards.',
+                'Gen 3, Gen 4.',
+                'Carrefour, Lulu, Spinneys.',
+                'UAE Dirham (د.إ, AED).',
+                '.ae.',
+                'Right.',
+                'None.',
+                'White Google car.',
+                'White plates, distinct emirate designs.',
+                'White lines, yellow outer.',
+                '+971.',
+                'Red boxes (Emirates Post).',
+                'Sandy desert, palm trees, massive highways.',
+                'Paved, pristine.',
+                'UK/US style signs.',
+                'Mostly buried.',
+                'Green or Blue directional signs. Arabic and English.'
+            ]
+        },
+        'qa': {
+            name: 'Qatar',
+            data: [
+                'Modern architecture, construction sites.',
+                'Yellow/black bollards.',
+                'Gen 4.',
+                'Al Meera, Lulu, Monoprix.',
+                'Qatari Riyal (QR, QAR).',
+                '.qa.',
+                'Right.',
+                'None.',
+                'White Google car.',
+                'White plates with a maroon block on the left (Qatari flag colors).',
+                'White lines.',
+                '+974.',
+                'Blue boxes (Qatar Post).',
+                'Flat, arid desert, almost exclusively Doha coverage.',
+                'Paved.',
+                'UK style.',
+                'Buried lines.',
+                'Blue/Green signs. Arabic and English.'
+            ]
+        },
+        'bd': {
+            name: 'Bangladesh',
+            data: [
+                'Corrugated tin shacks, brick buildings.',
+                'Painted concrete blocks.',
+                'Gen 3, Gen 4.',
+                'Shwapno, Agora.',
+                'Bangladeshi Taka (৳, BDT).',
+                '.bd, .com.bd.',
+                'Left.',
+                'None.',
+                'Gen 4.',
+                'Green plates with white text.',
+                'Faded white lines.',
+                '+880.',
+                'Red boxes.',
+                'Lush green, flat, extreme traffic, auto-rickshaws everywhere.',
+                'Dirt.',
+                'Varied.',
+                'Concrete poles.',
+                'Green signs, distinct red and green borders. Bengali script.'
+            ]
+        },
+        'lk': {
+            name: 'Sri Lanka',
+            data: [
+                'Concrete houses, tile roofs.',
+                'Black and white striped concrete posts.',
+                'Gen 3 Low Cam mostly.',
+                'Keells, Cargills, Arpico.',
+                'Sri Lankan Rupee (Rs, LKR).',
+                '.lk.',
+                'Left.',
+                'None.',
+                'Gen 3 Low Camera (blurred bottom).',
+                'White plates (front), Yellow plates (rear). Includes province code letters.',
+                'White lines.',
+                '+94.',
+                'Red cylindrical boxes (Sri Lanka Post).',
+                'Tropical, lush, palm trees, tuk-tuks.',
+                'Paved.',
+                'Yellow warning signs.',
+                'Concrete square poles.',
+                'Sinhala (round letters) and Tamil script.'
+            ]
+        },
+        'bt': {
+            name: 'Bhutan',
+            data: [
+                'Distinctive traditional woodwork, sloping roofs.',
+                'Red numbers painted on white stones lining the road.',
+                'Gen 3, Gen 4.',
+                'Local shops.',
+                'Bhutanese Ngultrum (Nu., BTN).',
+                '.bt.',
+                'Left.',
+                'None.',
+                'Gen 3/4.',
+                'Red plates (taxis/commercial), White plates (private).',
+                'White or absent lines.',
+                '+975.',
+                'Red boxes.',
+                'Massive Himalayan mountains, pine forests, prayer flags.',
+                'Paved or dirt.',
+                'Yellow warning signs.',
+                'Wooden poles.',
+                'Green or blue signs. Dzongkha script and English.'
+            ]
+        },
+        'np': {
+            name: 'Nepal',
+            data: [
+                'Brick houses, flat roofs with exposed rebar, colorful painted facades.',
+                'Rare. Sometimes black and white painted concrete bases.',
+                'Gen 3, Gen 4.',
+                'Ncell, CG, local shops.',
+                'Nepalese Rupee (रू, NPR).',
+                '.np, .com.np.',
+                'Left.',
+                'None.',
+                'Often trekker footage, visible shadows of a person or pickup truck roof.',
+                'Red plates with white text are extremely common. Black plates for public transport.',
+                'Often absent. Faded white lines on major paved roads.',
+                '+977.',
+                'Red boxes (Nepal Post), but very rare.',
+                'Massive Himalayas to the north, terraced green hills, flat Terai plains in the south.',
+                'Dirt paths or dusty edges, highly uneven.',
+                'UK-style warning signs. Lots of English mixed with Nepali.',
+                'Metal or concrete poles with extremely dense, messy tangled wires.',
+                'Blue directional signs. Devanagari script (distinct top horizontal line).'
+            ],
+            regions: {
+                'Bagmati': ['Kathmandu area. Extremely dense urban environment, dusty, brick buildings everywhere.'],
+                'Gandaki': ['Pokhara area. Lush valleys, lakes, close views of massive snow peaks (Annapurna).'],
+                'Lumbini': ['Flat Terai plains, tropical feel, dense agriculture.']
+            }
+        },
+        'kh': {
+            name: 'Cambodia',
+            data: [
+                'Stilt houses, ornate temple roofs, corrugated iron.',
+                'Red and white painted concrete stones.',
+                'Gen 3, Gen 4.',
+                'Aeon, Chip Mong, Angkor Beer signs everywhere.',
+                'Cambodian Riel (៛, KHR).',
+                '.kh, .com.kh.',
+                'Right.',
+                'None.',
+                'Gen 3/4.',
+                'White plates with Khmer script at the top.',
+                'White lines.',
+                '+855.',
+                'Yellow boxes (Cambodia Post).',
+                'Flat, tropical, palm trees, red dirt.',
+                'Dirt.',
+                'Varied.',
+                'Concrete poles.',
+                'Blue signs. Khmer script (looks like tight squiggles).'
+            ]
+        },
+        'la': {
+            name: 'Laos',
+            data: [
+                'Wooden stilt houses, concrete buildings.',
+                'Red and white concrete posts.',
+                'Gen 3, Gen 4.',
+                'Kok Kok Mega Mart, Beerlao signs.',
+                'Lao Kip (₭, LAK).',
+                '.la.',
+                'Right.',
+                'None.',
+                'Gen 3/4.',
+                'Yellow license plates are overwhelmingly common.',
+                'Yellow center lines.',
+                '+856.',
+                'Red boxes.',
+                'Mountains, tropical, red dirt.',
+                'Dirt or broken paved.',
+                'Yellow warning signs.',
+                'Concrete poles.',
+                'Blue signs. Lao script (more loopy than Thai).'
+            ]
+        },
+        'my': {
+            name: 'Malaysia',
+            data: [
+                'Concrete terraced houses, tin roofs.',
+                'Black and white posts.',
+                'Gen 3, Gen 4.',
+                '99 Speedmart, Lotus\'s, Giant.',
+                'Malaysian Ringgit (RM, MYR).',
+                '.my, .com.my.',
+                'Left.',
+                'None.',
+                'Gen 3/4.',
+                'Black license plates with white text (like Indonesia).',
+                'White lines.',
+                '+60.',
+                'Red boxes (Pos Malaysia).',
+                'Tropical rainforest, palm oil plantations.',
+                'Paved.',
+                'Yellow diamond warning signs.',
+                'Concrete poles often with a black sticker featuring white text.',
+                'Green directional signs. Malay language (Latin script).'
+            ]
+        },
+        'vn': {
+            name: 'Vietnam',
+            data: [
+                'Tall skinny "tube houses", flat roofs.',
+                'Red and white posts.',
+                'Gen 3, Trekker.',
+                'WinMart, Co.opmart, Bach Hoa Xanh.',
+                'Vietnamese Dong (₫, VND).',
+                '.vn.',
+                'Right.',
+                'Motorbikes everywhere.',
+                'Mostly trekker on a motorbike.',
+                'White plates, rectangular or square.',
+                'White lines.',
+                '+84.',
+                'Yellow boxes (Vietnam Post).',
+                'Tropical, dense cities, rice paddies.',
+                'Paved or dirt.',
+                'Varied.',
+                'Concrete poles.',
+                'Blue signs. Vietnamese script (Latin with many diacritics).'
+            ]
+        },
+        'mn': {
+            name: 'Mongolia',
+            data: [
+                'Gers (yurts), wooden fences, Soviet style blocks.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'CU, GS25, Nomin.',
+                'Mongolian Tögrög (₮, MNT).',
+                '.mn.',
+                'Right.',
+                'None.',
+                'Google car often has a roof rack/tent visible in shadow.',
+                'White plates, Cyrillic text.',
+                'White lines.',
+                '+976.',
+                'Blue boxes.',
+                'Treeless vast steppe, rolling hills, extreme arid climate.',
+                'Dirt tracks.',
+                'Yellow warning signs.',
+                'Wooden poles.',
+                'Blue signs. Cyrillic script.'
+            ]
+        },
+        'kg': {
+            name: 'Kyrgyzstan',
+            data: [
+                'Soviet apartments, brick houses, metal fences.',
+                'Painted concrete blocks.',
+                'Gen 3, Gen 4.',
+                'Globus, Narodniy, Frunze.',
+                'Kyrgyzstani Som (с, KGS).',
+                '.kg.',
+                'Right.',
+                'None.',
+                'Google car often has distinct side mirrors visible.',
+                'White plates, red vertical stripe on the left is very common.',
+                'White lines.',
+                '+996.',
+                'Blue boxes.',
+                'Massive snow-capped mountains, dry valleys.',
+                'Cracked asphalt, dirt.',
+                'Varied.',
+                'Concrete A-frame poles.',
+                'Blue signs. Cyrillic script.'
+            ]
+        },
+        'hk': {
+            name: 'Hong Kong',
+            data: [
+                'Extremely tall, dense apartment blocks.',
+                'Yellow/black bollards.',
+                'Gen 3, Gen 4.',
+                'ParknShop, Wellcome, 7-Eleven.',
+                'Hong Kong Dollar (HK$, HKD).',
+                '.hk, .com.hk.',
+                'Left.',
+                'Double-decker buses, red taxis.',
+                'Gen 4.',
+                'White front plate, Yellow rear plate (like UK).',
+                'White lines.',
+                '+852.',
+                'Green boxes (Hongkong Post).',
+                'Lush green tropical mountains mixed with extreme urban density.',
+                'Paved.',
+                'UK style warning signs.',
+                'Mostly buried lines.',
+                'White/black directional signs. Traditional Chinese and English.'
+            ]
+        },
+        'ke': {
+            name: 'Kenya',
+            data: [
+                'Concrete block buildings, iron sheet roofs.',
+                'Yellow/black posts.',
+                'Gen 3, Gen 4.',
+                'Naivas, Quickmart, Safaricom.',
+                'Kenyan Shilling (KSh, KES).',
+                '.ke, .co.ke.',
+                'Left.',
+                'None.',
+                'Google car almost always has a "snorkel" (black tube) visible on the front left.',
+                'White front plate, Yellow rear plate.',
+                'White lines.',
+                '+254.',
+                'Red boxes (Posta Kenya).',
+                'Savannah, acacia trees, red dirt, hilly.',
+                'Dirt.',
+                'UK style.',
+                'Wooden poles.',
+                'Blue directional signs. English and Swahili.'
+            ]
+        },
+        'ug': {
+            name: 'Uganda',
+            data: [
+                'Concrete blocks, iron sheet roofs.',
+                'Painted stones.',
+                'Gen 4.',
+                'Quality Supermarket, MTN, Airtel.',
+                'Ugandan Shilling (USh, UGX).',
+                '.ug, .co.ug.',
+                'Left.',
+                'None.',
+                'White Gen 4 car with unblurred white mirrors visible.',
+                'White plates.',
+                'White lines.',
+                '+256.',
+                'Posta Uganda.',
+                'Very green, lush, tropical, red dirt.',
+                'Dirt.',
+                'UK style.',
+                'Wooden poles.',
+                'Blue directional signs. English.'
+            ]
+        },
+        'rw': {
+            name: 'Rwanda',
+            data: [
+                'Neat brick houses, clay tile or iron roofs.',
+                'Painted concrete posts.',
+                'Gen 4.',
+                'Simba, MTN.',
+                'Rwandan Franc (FRw, RWF).',
+                '.rw.',
+                'Right.',
+                'None.',
+                'White Gen 4 car.',
+                'White plates.',
+                'White lines.',
+                '+250.',
+                'Iposita Rwanda.',
+                'Extremely hilly ("Land of a Thousand Hills"), very clean, red dirt.',
+                'Dirt.',
+                'Yellow warning signs.',
+                'Wooden poles.',
+                'Blue directional signs. French, English, Kinyarwanda.'
+            ]
+        },
+        'sn': {
+            name: 'Senegal',
+            data: [
+                'Unfinished concrete blocks, flat roofs.',
+                'Painted concrete.',
+                'Gen 3, Gen 4.',
+                'Auchan, Orange.',
+                'CFA Franc (CFA, XOF).',
+                '.sn.',
+                'Right.',
+                'None.',
+                'Google car often has visible "rifts" (cracks/lines) in the sky/camera lens.',
+                'Blue plates.',
+                'White lines.',
+                '+221.',
+                'Yellow boxes (La Poste).',
+                'Dry, Sahel landscape, baobab trees, sandy dirt.',
+                'Dirt.',
+                'French style.',
+                'Concrete poles.',
+                'Blue signs. French language.'
+            ]
+        },
+        'gh': {
+            name: 'Ghana',
+            data: [
+                'Concrete blocks, colorful shops.',
+                'Painted stones.',
+                'Gen 3, Gen 4.',
+                'Melcom, MTN, Vodafone.',
+                'Ghanaian Cedi (GH₵, GHS).',
+                '.gh, .com.gh.',
+                'Right.',
+                'None.',
+                'Google car often has black tape on the front right roof bar.',
+                'White or yellow plates.',
+                'Yellow outer lines, white dashed middle.',
+                '+233.',
+                'Ghana Post.',
+                'Tropical, lush in south, dry in north.',
+                'Dirt.',
+                'UK style.',
+                'Wooden poles.',
+                'Blue directional signs. English.'
+            ]
+        },
+        'bw': {
+            name: 'Botswana',
+            data: [
+                'Concrete blocks, corrugated roofs.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'Choppies, Spar, Gaborone.',
+                'Botswana Pula (P, BWP).',
+                '.bw, .co.bw.',
+                'Left.',
+                'None.',
+                'Gen 3/4.',
+                'White plates with blue text or Yellow plates.',
+                'White lines.',
+                '+267.',
+                'Red boxes (BotswanaPost).',
+                'Extremely flat, dry, scrubland, white sandy soil.',
+                'Dirt.',
+                'UK style.',
+                'Wooden poles.',
+                'Green directional signs. English.'
+            ]
+        },
+        'sz': {
+            name: 'Eswatini',
+            data: [
+                'Concrete block, corrugated iron.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'Shoprite, Spar, Pick n Pay.',
+                'Swazi Lilangeni (E, SZL).',
+                '.sz, .co.sz.',
+                'Left.',
+                'None.',
+                'Gen 3/4.',
+                'White plates with black text.',
+                'Yellow outer lines.',
+                '+268.',
+                'Red boxes.',
+                'Lush green hills, mountains, highly scenic.',
+                'Dirt.',
+                'South African style.',
+                'Wooden poles.',
+                'Green directional signs.'
+            ]
+        },
+        'ls': {
+            name: 'Lesotho',
+            data: [
+                'Stone huts (rondavels), concrete blocks.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'Shoprite, Pick n Pay.',
+                'Lesotho Loti (L, LSL).',
+                '.ls, .co.ls.',
+                'Left.',
+                'None.',
+                'Gen 3/4.',
+                'White plates with blue text.',
+                'Yellow outer lines.',
+                '+266.',
+                'Red boxes.',
+                'Extremely mountainous, barren, grassy, high altitude.',
+                'Dirt.',
+                'South African style.',
+                'Wooden poles.',
+                'Green directional signs.'
+            ]
+        },
+        'mg': {
+            name: 'Madagascar',
+            data: [
+                'Brick houses, thatched roofs.',
+                'Rare.',
+                'Gen 3.',
+                'Jumbo Score, Shoprite.',
+                'Malagasy Ariary (Ar, MGA).',
+                '.mg.',
+                'Right.',
+                'None.',
+                'Often a trekker or a very distinct Google car (white pickup).',
+                'White plates.',
+                'White lines.',
+                '+261.',
+                'Paositra Malagasy.',
+                'Red dirt, unique flora (Baobabs, Ravenala).',
+                'Dirt.',
+                'French style.',
+                'Wooden poles.',
+                'Blue signs. French and Malagasy.'
+            ]
+        },
+        'co': {
+            name: 'Colombia',
+            data: [
+                'Brick houses, flat roofs, colorful.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'Éxito, Olimpica, D1.',
+                'Colombian Peso ($, COP).',
+                '.co, .com.co.',
+                'Right.',
+                'Yellow taxis everywhere.',
+                'Gen 3/4.',
+                'Yellow license plates for almost all vehicles.',
+                'Yellow center lines.',
+                '+57.',
+                '4-72.',
+                'Andes mountains, lush green tropical foliage.',
+                'Paved or dirt.',
+                'Back of signs often have a metallic cross frame.',
+                'Concrete poles.',
+                'Green directional signs. Spanish.'
+            ],
+            regions: {
+                'Cundinamarca': ['Distinct Spanish-style bollards present.'],
+                'Atlantico': ['Distinct Barranquilla bollards present.']
+            }
+        },
+        'ec': {
+            name: 'Ecuador',
+            data: [
+                'Brick houses, colorful.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'Supermaxi, Mi Comisariato, Tia.',
+                'US Dollar ($, USD).',
+                '.ec, .com.ec.',
+                'Right.',
+                'Yellow taxis.',
+                'Gen 3/4.',
+                'White plates, orange strip for commercial/taxis.',
+                'White lines.',
+                '+593.',
+                'Correos del Ecuador.',
+                'Andes mountains, tropical coast, lush.',
+                'Paved.',
+                'US-style signs.',
+                'Concrete poles with distinctive horizontal metal brackets.',
+                'Green directional signs. Spanish.'
+            ]
+        },
+        'pe': {
+            name: 'Peru',
+            data: [
+                'Unfinished brick, flat roofs, rebar sticking out.',
+                'Yellow and black posts.',
+                'Gen 3, Gen 4.',
+                'Plaza Vea, Tottus, Metro.',
+                'Peruvian Sol (S/, PEN).',
+                '.pe, .com.pe.',
+                'Right.',
+                'Tuk-tuks (mototaxis).',
+                'Gen 3/4.',
+                'White plates with a yellow top strip for commercial.',
+                'White lines.',
+                '+51.',
+                'Serpost.',
+                'Extremely dry coastal desert, high Andes, jungle in east.',
+                'Dirt or paved.',
+                'Black and white striped signposts are very common.',
+                'Concrete poles.',
+                'Green directional signs. Spanish.'
+            ],
+            regions: {
+                'Moquegua': ['Bollards: Black with a Yellow Top - Only found on Route 36A.', 'South Peru bollards often have yellow tape.'],
+                'Puno': ['Route 36A bollards can be a triangular shape.', 'South Peru bollards often have yellow tape.'],
+                'Tacna': ['Bollards here often have a red reflector and are yellow capped.', 'South Peru bollards often have yellow tape.'],
+                'Madre de Dios': ['Distinct Route 30C bollard present.'],
+                'Ica': ['Distinct Ica/Lima bollards present.'],
+                'Lima': ['Distinct Ica/Lima bollards present.']
+            }
+        },
+        'bo': {
+            name: 'Bolivia',
+            data: [
+                'Unfinished bare red brick houses everywhere.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'Hipermaxi.',
+                'Bolivian Boliviano (Bs., BOB).',
+                '.bo, .com.bo.',
+                'Right.',
+                'None.',
+                'Gen 3/4.',
+                'White plates.',
+                'White lines.',
+                '+591.',
+                'Correos de Bolivia.',
+                'High altitude Andes, Altiplano, dry, stark.',
+                'Dirt or cobblestone.',
+                'US-style signs.',
+                'Wooden poles.',
+                'Green directional signs. Spanish.'
+            ]
+        },
+        'uy': {
+            name: 'Uruguay',
+            data: [
+                'Single-story houses, flat roofs, brick/plaster.',
+                'White posts.',
+                'Gen 3, Gen 4.',
+                'Tienda Inglesa, Ta-Ta, Devoto.',
+                'Uruguayan Peso ($, UYU).',
+                '.uy, .com.uy.',
+                'Right.',
+                'None.',
+                'White Gen 4 car.',
+                'White plates, light blue bottom strip.',
+                'White center lines.',
+                '+598.',
+                'Correo Uruguayo.',
+                'Flat, rolling green hills, similar to Argentina but greener.',
+                'Paved.',
+                'US-style signs.',
+                'Concrete "teardrop" shaped poles.',
+                'Green directional signs. Spanish.'
+            ]
+        },
+        'cr': {
+            name: 'Costa Rica',
+            data: [
+                'Colorful houses, corrugated iron roofs.',
+                'White posts.',
+                'Gen 3.',
+                'Megasuper, Pali, Maxi Pali.',
+                'Costa Rican Colón (₡, CRC).',
+                '.cr, .co.cr.',
+                'Right.',
+                'None.',
+                'Gen 3, often a distinct white car with roof rack.',
+                'White plates with blue and red details.',
+                'Yellow center lines.',
+                '+506.',
+                'Correos de Costa Rica.',
+                'Lush green tropical jungle, highly mountainous.',
+                'Paved or dirt.',
+                'Yield signs say "CEDA".',
+                'Concrete poles.',
+                'Green directional signs. Spanish.'
+            ]
+        },
+        'gt': {
+            name: 'Guatemala',
+            data: [
+                'Colorful blocks, corrugated iron, barred windows.',
+                'Painted concrete.',
+                'Gen 3, Gen 4.',
+                'La Torre, Paiz, Despensa Familiar.',
+                'Guatemalan Quetzal (Q, GTQ).',
+                '.gt, .com.gt.',
+                'Right.',
+                'None.',
+                'Google car often has a roof rack and mirrors visible.',
+                'White plates.',
+                'Yellow center lines.',
+                '+502.',
+                'El Correo.',
+                'Volcanic mountains, dense tropical jungle.',
+                'Dirt or paved.',
+                'Stop signs say "ALTO".',
+                'Concrete poles.',
+                'Green directional signs. Spanish.'
+            ]
+        },
+        'do': {
+            name: 'Dominican Republic',
+            data: [
+                'Colorful wooden or concrete houses, tin roofs.',
+                'Painted stones.',
+                'Gen 4.',
+                'Supermercados Nacional, Sirena, Jumbo.',
+                'Dominican Peso (RD$, DOP).',
+                '.do, .com.do.',
+                'Right.',
+                'None.',
+                'Google car often has bars/roof rack visible.',
+                'White plates.',
+                'Yellow center lines.',
+                '+1 (809, 829, 849).',
+                'Inposdom.',
+                'Tropical, palm trees, Caribbean vibes.',
+                'Dirt or paved.',
+                'US-style signs.',
+                'Concrete and wooden poles.',
+                'Green directional signs. Spanish.'
+            ]
+        },
+        'pr': {
+            name: 'Puerto Rico',
+            data: [
+                'Concrete houses, flat roofs, hurricane shutters.',
+                'US-style posts.',
+                'Gen 4.',
+                'Econo, SuperMax, Pueblo.',
+                'US Dollar ($, USD).',
+                '.pr, .com.pr.',
+                'Right.',
+                'None.',
+                'White Gen 4 car with visible antenna.',
+                'White plates.',
+                'Yellow center lines.',
+                '+1 (787, 939).',
+                'Blue USPS boxes.',
+                'Tropical, hilly, lush green.',
+                'Paved.',
+                'US-style signs but text is in Spanish ("PARE" instead of STOP).',
+                'Wooden and concrete poles.',
+                'Green directional signs. Spanish.'
+            ]
+        },
+        'pa': {
+            name: 'Panama',
+            data: [
+                'Concrete block houses, tin roofs.',
+                'White posts.',
+                'Gen 4.',
+                'Super 99, Rey, Riba Smith.',
+                'US Dollar/Balboa (B/., PAB/USD).',
+                '.pa, .com.pa.',
+                'Right.',
+                'None.',
+                'Gen 4 car.',
+                'White plates.',
+                'Yellow center lines.',
+                '+507.',
+                'Cotel.',
+                'Tropical, hilly, dense jungle.',
+                'Paved.',
+                'US-style signs. Stop says "ALTO".',
+                'Concrete poles.',
+                'Green directional signs. Spanish.'
+            ]
+        },
+        'pt': {
+            name: 'Portugal',
+            data: [
+                'White-washed houses with terracotta roofs, azulejo tiles.',
+                'White bollards with a black slanted top and round white reflectors.',
+                'Gen 3, Gen 4.',
+                'Continente, Pingo Doce, Auchan.',
+                'Euro (€, EUR).',
+                '.pt.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with a yellow strip on the RIGHT side (dates), blue EU on left.',
+                'White lines.',
+                '+351.',
+                'Red boxes (CTT).',
+                'Hilly, olive trees, eucalyptus, dry in south (Algarve), green in north.',
+                'Portuguese pavement (calcada).',
+                'Yellow diamond pedestrian crossings.',
+                'Concrete holey poles.',
+                'Blue directional signs. Portuguese language.'
+            ]
+        },
+        'mc': {
+            name: 'Monaco',
+            data: [
+                'Luxury apartments, extremely dense, coastal cliffs.',
+                'French style.',
+                'Gen 3, Gen 4.',
+                'Carrefour.',
+                'Euro (€, EUR).',
+                '.mc.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with blue details (Monegasque plates).',
+                'White lines.',
+                '+377.',
+                'French boxes.',
+                'Steep hills, Mediterranean sea view.',
+                'Pristine pavement.',
+                'French style.',
+                'Buried lines.',
+                'French style.'
+            ]
+        },
+        'gl': {
+            name: 'Greenland',
+            data: [
+                'Colorful wooden houses, built on rock.',
+                'Rare.',
+                'Gen 3, Trekker.',
+                'Pilersuisoq, Brugseni.',
+                'Danish Krone (kr, DKK).',
+                '.gl.',
+                'Right.',
+                'None.',
+                'Trekker on ATV or snowmobile.',
+                'White plates.',
+                'Rare/None.',
+                '+299.',
+                'Red boxes (Tele-Post).',
+                'Arctic, ice, snow, treeless, rugged rocks.',
+                'Dirt/Gravel.',
+                'Danish style.',
+                'Wooden poles.',
+                'Danish/Greenlandic.'
+            ]
+        },
+        'fo': {
+            name: 'Faroe Islands',
+            data: [
+                'Turf roofs, colorful wooden/stone houses.',
+                'Danish style.',
+                'Gen 3, Gen 4.',
+                'Bónus, FK.',
+                'Faroese Króna/Danish Krone.',
+                '.fo.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White plates with blue band.',
+                'White lines.',
+                '+298.',
+                'Blue boxes.',
+                'Treeless, extremely green grassy mountains, sheep.',
+                'Paved.',
+                'Danish style.',
+                'Wooden poles.',
+                'Danish/Faroese.'
+            ]
+        },
+        'tn': {
+            name: 'Tunisia',
+            data: [
+                'White-washed square houses, blue doors and windows.',
+                'White bollards with red tops.',
+                'Gen 3, Gen 4.',
+                'Monoprix, Carrefour, Magasin Général.',
+                'Tunisian Dinar (DT, TND).',
+                '.tn.',
+                'Right.',
+                'Follow car often visible in mirrors.',
+                'Often a green Google car or follows a police escort.',
+                'Black license plates with white text.',
+                'White lines.',
+                '+216.',
+                'Yellow boxes.',
+                'Olive trees, arid in south, Mediterranean in north.',
+                'Paved.',
+                'French style signs. Stop says "قف".',
+                'Concrete poles.',
+                'Blue directional signs. Arabic and French.'
+            ]
+        },
+        'mo': {
+            name: 'Macao',
+            data: [
+                'Extremely dense casinos, Portuguese-style cobblestone, high-rises.',
+                'Black and yellow striped bollards.',
+                'Gen 3, Gen 4.',
+                'Sands, MGM, Wynn, local shops.',
+                'Macanese Pataca (MOP$, MOP).',
+                '.mo, .com.mo.',
+                'Left.',
+                'None.',
+                'Gen 4.',
+                'Black plates with white text.',
+                'White lines.',
+                '+853.',
+                'Red boxes (CTT Macau).',
+                'Urbanized, heavily paved, dense traffic.',
+                'Portuguese black/white wave patterned pavement.',
+                'Portuguese/Chinese signs.',
+                'Buried lines.',
+                'Bilingual Traditional Chinese and Portuguese.'
+            ]
+        },
+        'ps': {
+            name: 'Palestine',
+            data: [
+                'Concrete block buildings, flat roofs.',
+                'White/yellow striped bollards.',
+                'Gen 3, Gen 4.',
+                'Local shops.',
+                'Israeli New Shekel (₪, ILS).',
+                '.ps.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'White or green plates.',
+                'White lines.',
+                '+970.',
+                'Rare.',
+                'Hilly, arid, olive trees, West Bank barrier.',
+                'Paved or dirt.',
+                'Warning signs are yellow triangles.',
+                'Concrete/wooden poles.',
+                'Green/Blue signs. Arabic and English.'
+            ]
+        },
+        'cw': {
+            name: 'Curacao',
+            data: [
+                'Colorful Dutch colonial architecture, pastel colors.',
+                'Rare.',
+                'Gen 3, Gen 4.',
+                'Centrum Supermarket, Mangusa.',
+                'Netherlands Antillean Guilder (NAƒ, ANG).',
+                '.cw.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'Yellow license plates.',
+                'White lines.',
+                '+599.',
+                'Red boxes.',
+                'Caribbean island, dry, cacti, beaches.',
+                'Paved.',
+                'Dutch style.',
+                'Wooden poles.',
+                'Dutch style signs.'
+            ]
+        },
+        'vi': {
+            name: 'US Virgin Islands',
+            data: [
+                'Caribbean style, colorful, elevated houses.',
+                'US-style.',
+                'Gen 4.',
+                'Pueblo Supermarket, Kmart.',
+                'US Dollar ($, USD).',
+                '.vi.',
+                'Left (unlike mainland US).',
+                'None.',
+                'White Gen 4 car.',
+                'US style plates.',
+                'Yellow center lines.',
+                '+1 (340).',
+                'Blue USPS boxes.',
+                'Tropical island, hilly.',
+                'Paved.',
+                'US style signs.',
+                'Wooden poles.',
+                'US style green signs.'
+            ]
+        },
+        'as': {
+            name: 'American Samoa',
+            data: [
+                'Fales (open sided structures), tropical houses.',
+                'Rare.',
+                'Gen 3.',
+                'Forsgren, KS Mart.',
+                'US Dollar ($, USD).',
+                '.as.',
+                'Right.',
+                'None.',
+                'Gen 3.',
+                'US style plates.',
+                'Yellow center lines.',
+                '+1 (684).',
+                'Blue USPS boxes.',
+                'Extremely lush volcanic island in the Pacific.',
+                'Paved.',
+                'US style.',
+                'Wooden poles.',
+                'US style.'
+            ]
+        },
+        'gu': {
+            name: 'Guam',
+            data: [
+                'Concrete houses (typhoon resistant).',
+                'US-style.',
+                'Gen 3, Gen 4.',
+                'Pay-Less Supermarkets, Kmart.',
+                'US Dollar ($, USD).',
+                '.gu.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'US style plates.',
+                'Yellow center lines.',
+                '+1 (671).',
+                'Blue USPS boxes.',
+                'Tropical, hilly, dense military presence.',
+                'Paved.',
+                'US style.',
+                'Concrete poles.',
+                'US style.'
+            ]
+        },
+        'mp': {
+            name: 'Northern Mariana Islands',
+            data: [
+                'Concrete houses, tropical vegetation.',
+                'US-style.',
+                'Gen 3, Gen 4.',
+                'Joeten Superstore.',
+                'US Dollar ($, USD).',
+                '.mp.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'US style plates.',
+                'Yellow center lines.',
+                '+1 (670).',
+                'Blue USPS boxes.',
+                'Tropical island.',
+                'Paved.',
+                'US style.',
+                'Concrete poles.',
+                'US style.'
+            ]
+        },
+        're': {
+            name: 'Reunion',
+            data: [
+                'Creole houses, corrugated roofs.',
+                'French style.',
+                'Gen 3, Gen 4.',
+                'Leclerc, Carrefour.',
+                'Euro (€, EUR).',
+                '.re.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'French/EU style plates.',
+                'White lines.',
+                '+262.',
+                'Yellow boxes (La Poste).',
+                'Volcanic, highly mountainous, lush.',
+                'Paved.',
+                'French style.',
+                'Concrete poles.',
+                'French style.'
+            ]
+        },
+        'mq': {
+            name: 'Martinique',
+            data: [
+                'Colorful Caribbean houses, corrugated iron.',
+                'French style.',
+                'Gen 3, Gen 4.',
+                'Carrefour.',
+                'Euro (€, EUR).',
+                '.mq.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'French style plates.',
+                'White lines.',
+                '+596.',
+                'Yellow boxes (La Poste).',
+                'Tropical, Caribbean.',
+                'Paved.',
+                'French style.',
+                'Concrete poles.',
+                'French style.'
+            ]
+        },
+        'gp': {
+            name: 'Guadeloupe',
+            data: [
+                'Colorful Caribbean houses.',
+                'French style.',
+                'Gen 3, Gen 4.',
+                'Carrefour.',
+                'Euro (€, EUR).',
+                '.gp.',
+                'Right.',
+                'None.',
+                'Gen 4.',
+                'French style plates.',
+                'White lines.',
+                '+590.',
+                'Yellow boxes (La Poste).',
+                'Tropical, Caribbean.',
+                'Paved.',
+                'French style.',
+                'Concrete poles.',
+                'French style.'
+            ]
+        }
+    };
+
+    for (const country in TIPS_DB) {
+        if (TIPS_DB[country].regions) {
+            TIPS_DB[country].normalizedRegions = Object.keys(TIPS_DB[country].regions).map(k => ({
+                original: k,
+                normalized: normalizeString(k)
+            }));
+        }
+    }
+
+    function normalizeString(str) {
+        if (!str) return "";
+        return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    }
+
+    function updateState(newState) {
+        let changed = false;
+        for (const key in newState) {
+            if (state[key] !== newState[key]) {
+                state[key] = newState[key];
+                changed = true;
+            }
+        }
+        if (changed) renderUI();
+    }
+
+    function checkIsSingleplayer() {
+        if (window.location.href.toLowerCase().includes('solo')) return true;
+        return (document.body && document.body.innerHTML.toLowerCase().includes('solo'));
+    }
+
+    function init() {
+        setupNetworkHooks();
+        setupURLTracking();
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', onReady);
+        } else {
+            onReady();
+        }
+    }
+
+    function onReady() {
+        updateState({ isSoloCached: checkIsSingleplayer() });
+        setupIframeObserver();
+        initUI();
+    }
+
+    function setupURLTracking() {
+        let lastUrl = location.href;
+        function handleUrlChange() {
+            if (location.href !== lastUrl) {
+                lastUrl = location.href;
+                updateState({
+                    currentLocation: null,
+                    lastPano: null,
+                    countryCode: null,
+                    countryName: null,
+                    regionName: null,
+                    status: 'Waiting for a round...',
+                    isSoloCached: checkIsSingleplayer()
+                });
+            }
+        }
+
+        window.addEventListener('popstate', handleUrlChange);
+        const originalPushState = history.pushState;
+        history.pushState = function(...args) {
+            originalPushState.apply(this, args);
+            handleUrlChange();
+        };
+        const originalReplaceState = history.replaceState;
+        history.replaceState = function(...args) {
+            originalReplaceState.apply(this, args);
+            handleUrlChange();
+        };
+    }
+
+    function getCountryFromCoords(lat, lng) {
+        return new Promise((resolve) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&accept-language=en&zoom=5`,
+                headers: { 'User-Agent': 'MetaTrainer/4.6' },
+                onload: function(response) {
+                    try {
+                        const data = JSON.parse(response.responseText);
+                        if (data && data.address && data.address.country_code) {
+                            resolve({
+                                code: data.address.country_code.toLowerCase(),
+                                name: data.address.country,
+                                region: data.address.state || data.address.province || data.address.region || null
+                            });
+                        } else {
+                            resolve({ code: 'unknown', name: 'Unknown Location', region: null });
+                        }
+                    } catch(e) {
+                        resolve({ code: 'unknown', name: 'Error Resolving', region: null });
+                    }
+                },
+                onerror: function() {
+                    resolve({ code: 'unknown', name: 'Network Error', region: null });
+                }
+            });
+        });
+    }
+
+    function extractCoordsFromText(text) {
+        const panoMatch = text.match(/"pano(?:Id)?"\s*:\s*"([a-zA-Z0-9_\-]+)"/);
+        if (panoMatch && panoMatch[1].length >= 10) return { pano: panoMatch[1] };
+
+        const latMatch = text.match(/"lat(?:itude)?"\s*:\s*(-?\d+\.\d+)/);
+        const lngMatch = text.match(/"l(?:ng|ongitude)"\s*:\s*(-?\d+\.\d+)/);
+
+        if (latMatch && lngMatch) {
+            const lat = parseFloat(latMatch[1]);
+            const lng = parseFloat(lngMatch[1]);
+            if (!isNaN(lat) && !isNaN(lng) && lat !== 0) return { lat, lng };
+        }
+        return null;
+    }
+
+    function setupNetworkHooks() {
+        const OriginalWebSocket = window.WebSocket;
+        window.WebSocket = function(url, protocols) {
+            const ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
+            ws.addEventListener('message', function(event) {
+                if (!state.isSoloCached) return;
+
+                const dataStr = event.data;
+                if (typeof dataStr === 'string' && (dataStr.includes('"lat"') || dataStr.includes('"pano"'))) {
+                    let cleanStr = dataStr.replace(/^\d+/, '');
+                    if (cleanStr) {
+                        let coords = extractCoordsFromText(cleanStr);
+                        if (!coords) {
+                            try {
+                                const data = JSON.parse(cleanStr);
+                                coords = fastSearchForCoordinates(data);
+                            } catch (e) {}
+                        }
+                        if (coords) handleFoundCoords(coords);
+                    }
+                }
+            });
+            return ws;
+        };
+
+        const originalFetch = window.fetch;
+        window.fetch = async function(...args) {
+            const response = await originalFetch.apply(window, args);
+            if (!state.isSoloCached) return response;
+
+            try {
+                const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+                if (!url.includes('.jpg') && !url.includes('.png')) {
+                    const clone = response.clone();
+                    clone.text().then(text => {
+                        if (text.includes('"lat"') || text.includes('"pano"')) {
+                            let coords = extractCoordsFromText(text);
+                            if (!coords) {
+                                try {
+                                    const data = JSON.parse(text);
+                                    coords = fastSearchForCoordinates(data);
+                                } catch(e){}
+                            }
+                            if (coords) handleFoundCoords(coords);
+                        }
+                    }).catch(() => {});
+                }
+            } catch(e) {}
+            return response;
+        };
+    }
+
+    function checkIframeSrc(src) {
+        if (!src || (!src.includes('google') && !src.includes('streetview'))) return;
+
+        const coordsMatch = src.match(/[cl]b?ll=(-?\d+\.\d+)[,%](-?\d+\.\d+)/) ||
+                            src.match(/location=(-?\d+\.\d+)[,%](-?\d+\.\d+)/);
+        if (coordsMatch) {
+            handleFoundCoords({lat: parseFloat(coordsMatch[1]), lng: parseFloat(coordsMatch[2])});
+            return;
+        }
+
+        const panoMatch = src.match(/pano=([a-zA-Z0-9_\-]+)/);
+        if (panoMatch) {
+            const pano = panoMatch[1];
+            if (state.lastPano !== pano) {
+                updateState({ lastPano: pano });
+                handleFoundCoords({ pano });
+            }
+        }
+    }
+
+    function setupIframeObserver() {
+        const iframeObserver = new MutationObserver((mutations) => {
+            if (!state.isSoloCached) return;
+            for (const mutation of mutations) {
+                if (mutation.type === 'childList') {
+                    mutation.addedNodes.forEach(node => {
+                        if (node.tagName === 'IFRAME') checkIframeSrc(node.src);
+                        else if (node.querySelectorAll) {
+                            node.querySelectorAll('iframe').forEach(ifr => checkIframeSrc(ifr.src));
+                        }
+                    });
+                } else if (mutation.type === 'attributes' && mutation.target.tagName === 'IFRAME') {
+                    checkIframeSrc(mutation.target.src);
+                }
+            }
+        });
+
+        iframeObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: ['src']
+        });
+
+        document.querySelectorAll('iframe').forEach(ifr => checkIframeSrc(ifr.src));
+    }
+
+    async function getMetadata(pano) {
+        if (state.panoCache.has(pano)) return state.panoCache.get(pano);
+        try {
+            let type = 2;
+            if (String(pano).startsWith('CIHM') || pano.length != 22) type = 10;
+            const payload = JSON.stringify([["apiv3"], ["en", "US"], [[[type, pano]]], [[1, 2, 3, 4, 8, 6]]]);
+
+            const response = await fetch(`https://maps.googleapis.com/$rpc/google.internal.maps.mapsjs.v1.MapsJsInternalService/GetMetadata`, {
+                method: "POST",
+                headers: { "content-type": "application/json+protobuf" },
+                body: payload,
+                mode: "cors", credentials: "omit"
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                const lat = data?.[1]?.[0]?.[5]?.[0]?.[1]?.[0]?.[2];
+                const lng = data?.[1]?.[0]?.[5]?.[0]?.[1]?.[0]?.[3];
+                if (lat !== undefined && lng !== undefined) {
+                    const coords = {lat, lng};
+                    state.panoCache.set(pano, coords);
+                    return coords;
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    function fastSearchForCoordinates(obj, depth = 0) {
+        if (!obj || typeof obj !== 'object' || depth > 4) return null;
+
+        if (obj.lat !== undefined && obj.lng !== undefined) {
+            const lat = parseFloat(obj.lat), lng = parseFloat(obj.lng);
+            if (!isNaN(lat) && !isNaN(lng) && lat !== 0) return { lat, lng };
+        }
+        if (obj.latitude !== undefined && obj.longitude !== undefined) {
+            const lat = parseFloat(obj.latitude), lng = parseFloat(obj.longitude);
+            if (!isNaN(lat) && !isNaN(lng) && lat !== 0) return { lat, lng };
+        }
+        if (obj.panoId) return { pano: obj.panoId };
+        if (obj.pano && typeof obj.pano === 'string' && obj.pano.length >= 10) return { pano: obj.pano };
+
+        const proto = Object.getPrototypeOf(obj);
+        if (Array.isArray(obj) || proto === Object.prototype || proto === null) {
+            for (const key in obj) {
+                const val = obj[key];
+                if (val && typeof val === 'object') {
+                    const res = fastSearchForCoordinates(val, depth + 1);
+                    if (res) return res;
+                }
+            }
+        }
+        return null;
+    }
+
+    async function handleFoundCoords(result) {
+        if (!state.isSoloCached || !result) return;
+
+        if (result.pano) {
+            updateState({ status: 'Fetching location...' });
+            const coords = await getMetadata(result.pano);
+            if (coords) setCoords(coords.lat, coords.lng);
+        } else if (result.lat !== undefined && result.lng !== undefined) {
+            setCoords(result.lat, result.lng);
+        }
+    }
+
+    async function setCoords(lat, lng) {
+        const hasChanged = !state.currentLocation ||
+            Math.abs(state.currentLocation.lat - lat) > 0.0001 ||
+            Math.abs(state.currentLocation.lng - lng) > 0.0001;
+
+        if (hasChanged) {
+            updateState({
+                currentLocation: {lat, lng},
+                countryCode: null,
+                countryName: null,
+                regionName: null,
+                status: "Analyzing landscape..."
+            });
+
+            const geoData = await getCountryFromCoords(lat, lng);
+            updateState({
+                countryCode: geoData.code,
+                countryName: geoData.name,
+                regionName: geoData.region,
+                status: "Location acquired"
+            });
+        }
+    }
+
+    function initUI() {
+        overlayElement = document.createElement('div');
+        overlayElement.id = 'meta-trainer-ui';
+
+        overlayElement.innerHTML = `
+            <div id="meta-trainer-header" style="cursor:move;">
+                <span style="display: flex; align-items: center; gap: 8px;">
+                    <span class="meta-trainer-lock" id="mt-lock-icon" style="cursor:pointer; font-size:14px;" title="Lock position">🔓</span>
+                    <span style="display:flex; align-items:center; gap:6px;">
+                        <span id="mt-status-dot" style="width:8px; height:8px; border-radius:50%; background:#ffe562; box-shadow: 0 0 6px #ffe562;"></span>
+                        Meta Trainer
+                    </span>
+                </span>
+                <span style="font-size:11px; opacity:0.6; font-weight: 400;">[Click to collapse]</span>
+            </div>
+            <div class="meta-trainer-content" id="mt-content-area" data-render-key="" data-mode="none"></div>
+            <div class="meta-trainer-resizer" title="Drag to resize"></div>
+        `;
+        document.body.appendChild(overlayElement);
+
+        overlayElement.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.meta-trainer-resizer')) {
+                let startY = e.clientY;
+                let startHeight = overlayElement.offsetHeight;
+                overlayElement.style.maxHeight = 'none';
+
+                function onMouseMoveResize(moveEvent) {
+                    overlayElement.style.height = Math.max(100, startHeight + (moveEvent.clientY - startY)) + 'px';
+                }
+                function onMouseUpResize() {
+                    window.removeEventListener('mousemove', onMouseMoveResize);
+                    window.removeEventListener('mouseup', onMouseUpResize);
+                    window.removeEventListener('blur', onMouseUpResize);
+                }
+                window.addEventListener('mousemove', onMouseMoveResize);
+                window.addEventListener('mouseup', onMouseUpResize);
+                window.addEventListener('blur', onMouseUpResize);
+                e.preventDefault();
+                e.stopPropagation();
+                return;
+            }
+
+            if (state.uiLocked) return;
+            if (!e.target.closest('#meta-trainer-header')) return;
+            if (e.target.closest('.meta-trainer-lock')) return;
+
+            isDraggingFlag = false;
+            let startX = e.clientX;
+            let startY = e.clientY;
+            let initialX = overlayElement.offsetLeft;
+            let initialY = overlayElement.offsetTop;
+
+            overlayElement.style.right = 'auto';
+            overlayElement.style.bottom = 'auto';
+
+            function onMouseMove(moveEvent) {
+                let dx = moveEvent.clientX - startX;
+                let dy = moveEvent.clientY - startY;
+                if (Math.abs(dx) > 3 || Math.abs(dy) > 3) isDraggingFlag = true;
+                overlayElement.style.left = (initialX + dx) + 'px';
+                overlayElement.style.top = (initialY + dy) + 'px';
+            }
+
+            function onMouseUp() {
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+                window.removeEventListener('blur', onMouseUp);
+                setTimeout(() => { isDraggingFlag = false; }, 50);
+            }
+
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('blur', onMouseUp);
+        });
+
+        overlayElement.addEventListener('click', (e) => {
+            const lockBtn = e.target.closest('.meta-trainer-lock');
+            if (lockBtn) {
+                updateState({ uiLocked: !state.uiLocked });
+                return;
+            }
+
+            if (!isDraggingFlag && e.target.closest('#meta-trainer-header')) {
+                overlayElement.classList.toggle('minimized');
+            }
+        });
+
+        renderUI();
+    }
+
+    function renderUI() {
+        if (!overlayElement) return;
+
+        if (!state.isSoloCached) {
+            overlayElement.style.display = 'none';
+            return;
+        }
+
+        overlayElement.style.display = 'flex';
+
+        const lockIconEl = document.getElementById('mt-lock-icon');
+        const statusDotEl = document.getElementById('mt-status-dot');
+        const contentAreaEl = document.getElementById('mt-content-area');
+        const headerEl = document.getElementById('meta-trainer-header');
+
+        if (!lockIconEl || !statusDotEl || !contentAreaEl || !headerEl) return;
+
+        lockIconEl.textContent = state.uiLocked ? '🔒' : '🔓';
+        lockIconEl.title = state.uiLocked ? 'Unlock dragging' : 'Lock position';
+        headerEl.style.cursor = state.uiLocked ? 'pointer' : 'move';
+
+        const statusColor = state.countryCode ? '#6deec0' : '#ffe562';
+        statusDotEl.style.background = statusColor;
+        statusDotEl.style.boxShadow = `0 0 6px ${statusColor}`;
+
+        if (state.countryCode) {
+            const currentRenderKey = `c_${state.countryCode}_${state.regionName}`;
+
+            if (contentAreaEl.dataset.renderKey !== currentRenderKey) {
+                const dbEntry = TIPS_DB[state.countryCode];
+                const countryDisplayName = dbEntry ? dbEntry.name : state.countryName;
+                let tipsHTML = '';
+
+                if (dbEntry && dbEntry.data) {
+                    tipsHTML = `<ul class="mt-list">
+                        ${dbEntry.data.map((val, i) => `<li style="margin-bottom: 6px;"><b>${CATEGORIES[i]}:</b> ${val}</li>`).join('')}
+                    </ul>`;
+                } else {
+                    tipsHTML = `<p style="font-size:13px; color:rgba(255, 255, 255, 0.7); margin: 8px 0 0 0; font-style: italic;">No 18-point meta loaded for this country yet. Use general clues.</p>`;
+                }
+
+                // ALWAYS display region/state info if nominatim gave us one
+                if (state.regionName) {
+                    let actualRegionName = state.regionName;
+                    let matchedObj = null;
+
+                    if (dbEntry && dbEntry.normalizedRegions) {
+                        const normRegion = normalizeString(state.regionName);
+                        matchedObj = dbEntry.normalizedRegions.find(r =>
+                            normRegion.includes(r.normalized) || r.normalized.includes(normRegion)
+                        );
+                    }
+
+                    if (matchedObj) actualRegionName = matchedObj.original;
+
+                    tipsHTML += `
+                        <div class="mt-subtitle" style="color: #6deec0; margin-top: 16px;">Region Detected: ${actualRegionName}</div>
+                    `;
+
+                    if (matchedObj && dbEntry.regions[actualRegionName]) {
+                        tipsHTML += `
+                        <ul class="mt-list">
+                            ${dbEntry.regions[actualRegionName].map(t => `<li style="margin-bottom: 4px;">${t}</li>`).join('')}
+                        </ul>`;
+                    } else {
+                        tipsHTML += `
+                        <ul class="mt-list">
+                            <li style="margin-bottom: 4px; color: rgba(255,255,255,0.6); font-style: italic;">No specific meta loaded for this region. General country clues apply.</li>
+                        </ul>`;
+                    }
+                }
+
+                contentAreaEl.innerHTML = `
+                    <div class="mt-subtitle mt-accent-green">Current Region</div>
+                    <div class="mt-title" style="margin-bottom: 12px;">${countryDisplayName}</div>
+                    <div style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 12px;">
+                        <div class="mt-subtitle mt-accent-yellow">Visual Metas</div>
+                        ${tipsHTML}
+                    </div>
+                `;
+                contentAreaEl.dataset.renderKey = currentRenderKey;
+                contentAreaEl.dataset.mode = 'country';
+            }
+        } else {
+            if (contentAreaEl.dataset.mode !== 'status') {
+                contentAreaEl.innerHTML = `
+                    <div class="mt-subtitle mt-accent-yellow">Status</div>
+                    <div id="mt-status-text" style="font-size: 14px; color: #dbecff; margin-top: 5px;">${state.status}</div>
+                `;
+                contentAreaEl.dataset.mode = 'status';
+                contentAreaEl.dataset.renderKey = '';
+            } else {
+                const statusTextEl = document.getElementById('mt-status-text');
+                if (statusTextEl && statusTextEl.textContent !== state.status) {
+                    statusTextEl.textContent = state.status;
+                }
+            }
+        }
+    }
+
+    GM_addStyle(`
+        #meta-trainer-ui {
+            -webkit-text-size-adjust: 100%;
+            tab-size: 4;
+            position: fixed;
+            top: 1rem;
+            left: 1rem;
+            right: auto;
+            width: 360px;
+            z-index: 999999;
+            font-family: 'IBM Plex Sans', sans-serif;
+            color: #ffffff;
+            border-radius: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background-color: rgba(7, 12, 18, 0.74);
+            box-shadow: var(--tw-ring-offset-shadow,0 0 #0000),var(--tw-ring-shadow,0 0 #0000),var(--tw-shadow);
+            --tw-shadow: 0 16px 42px rgba(3,8,14,0.34);
+            --tw-shadow-colored: 0 16px 42px var(--tw-shadow-color);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            display: flex;
+            flex-direction: column;
+            max-height: 80vh;
+            overflow: hidden;
+            box-sizing: border-box;
+            line-height: inherit;
+            font-feature-settings: normal;
+            font-variation-settings: normal;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        #meta-trainer-header {
+            padding: 0.75rem 1rem;
+            font-family: var(--font-montserrat), 'IBM Plex Sans', sans-serif;
+            font-weight: 800;
+            font-size: 14px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+            background: transparent;
+        }
+
+        .meta-trainer-lock {
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .meta-trainer-resizer {
+            height: 14px;
+            background: transparent;
+            cursor: ns-resize;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            flex-shrink: 0;
+            user-select: none;
+        }
+        .meta-trainer-resizer:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+        .meta-trainer-resizer::after {
+            content: "";
+            width: 30px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+        }
+
+        .meta-trainer-content {
+            overflow-y: auto;
+            flex: 1;
+            padding: 1rem;
+            -ms-overflow-style: none;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+        }
+        .meta-trainer-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        .meta-trainer-content::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .meta-trainer-content::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+        }
+
+        #meta-trainer-ui.minimized {
+            max-height: 45px !important;
+            height: 45px !important;
+            overflow: hidden;
+        }
+        #meta-trainer-ui.minimized .meta-trainer-content,
+        #meta-trainer-ui.minimized .meta-trainer-resizer {
+            display: none;
+        }
+        #meta-trainer-ui.minimized #meta-trainer-header {
+            border-bottom: none;
+        }
+
+        .mt-accent-green { color: #6deec0; }
+        .mt-accent-yellow { color: #ffe562; }
+        .mt-title { color: #ffffff; font-weight: 800; font-size: 20px; }
+        .mt-subtitle { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; }
+        .mt-list { margin: 0.5rem 0 0 0; padding-left: 20px; font-size: 13px; color: rgba(255, 255, 255, 0.9); line-height: 1.5; }
+    `);
+
+    init();
+})();
